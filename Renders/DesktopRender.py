@@ -126,7 +126,7 @@ def load_textures():
 
         out.paste(img, (x, y))
 
-    out.save("chunks/texture.png")
+    out.save("texture.png")
 
     tex_array.use(location=0)
     prog['atlasArray'] = 0

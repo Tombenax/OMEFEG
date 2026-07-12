@@ -25,6 +25,7 @@ from InstancedModel import InstancedModel
 from AnimationHandler import AnimationHandler
 #from ControllerHandler import ControllerHandler
 from ast import literal_eval
+from DesktopRender import *
 
 
 WIDTH = 1280
@@ -50,331 +51,6 @@ heightmap = PerlinNoiseFactory(dimension=2, octaves=1, seed=seed)
 #lakes = 3
 #larger islands = 1
 rules = {"structures":[{"chance":970, "name":"oak_small_tree"}, {"chance":930, "name":"oak_medium_tree"}, {"chance":999, "name":"temple"}], "water":{"level":1, "depth":5}, "terrain_height":5}
-
-
-# -------------------------
-# WORLD SHADERS (with texture array)
-# -------------------------
-
-VERTEX_SHADER = """
-#version 330
-in vec3 in_position;
-in vec3 in_normal;
-in vec2 in_uv;
-in mat4 instance_model;
-in int instance_layer;
-
-uniform mat4 projection;
-uniform mat4 view;
-
-out vec3 v_normal;
-out vec3 v_fragPos;
-out vec2 v_uv;
-flat out int v_layer;
-
-void main() {
-    vec4 worldPos = instance_model * vec4(in_position,1.0);
-    gl_Position = projection * view * worldPos;
-
-    v_fragPos = worldPos.xyz;
-    v_normal = mat3(transpose(inverse(instance_model))) * in_normal;
-    v_uv = in_uv;
-    v_layer = instance_layer;
-}
-"""
-
-FRAGMENT_SHADER = """
-#version 330
-
-in vec3 v_normal;
-in vec3 v_fragPos;
-in vec2 v_uv;
-flat in int v_layer;
-
-out vec4 fragColor;
-
-uniform sampler2DArray atlasArray;
-uniform vec3 lightPos;
-uniform vec3 viewPos;
-
-uniform bool enable_funky_shaders;
-uniform int frame;
-uniform float chance;
-
-uint pcg(uint v)
-{
-    v = v * 747796405u + 2891336453u;
-    v = ((v >> ((v >> 28u) + 4u)) ^ v) * 277803737u;
-    return (v >> 22u) ^ v;
-}
-
-float rand(vec2 pixel, uint frame)
-{
-    uint seed =
-        uint(pixel.x) * 1973u +
-        uint(pixel.y) * 9277u +
-        frame * 26699u;
-
-    return float(pcg(seed)) / 4294967295.0;
-}
-
-void main() {
-    // Sample full RGBA texture
-    vec4 tex = texture(atlasArray, vec3(v_uv, v_layer));
-    float r = rand(gl_FragCoord.xy, uint(frame));
-
-    // Discard fully transparent pixels (fixes black background)
-    if (tex.a < 0.1)
-        discard;
-
-    if (enable_funky_shaders)
-        //some random shaders for no reason
-        if (r <= chance)
-            discard;
-
-    vec3 color = tex.rgb;
-    vec3 norm = normalize(v_normal);
-
-    // Lighting
-    vec3 lightDir = normalize(lightPos - v_fragPos);
-    float diff = max(dot(norm, lightDir), 0.0);
-
-    vec3 ambient = 0.4 * color;
-    vec3 diffuse = diff * color;
-
-    vec3 viewDir = normalize(viewPos - v_fragPos);
-    vec3 reflectDir = reflect(-lightDir, norm);
-    float spec = pow(max(dot(viewDir, reflectDir), 0.0), 16.0);
-
-    // Final color with alpha preserved
-    fragColor = vec4(ambient + diffuse + spec, tex.a);
-}
-"""
-
-CHUNK_VERTEX_SHADER="""
-#version 330
-in vec3 in_position;
-in vec3 in_normal;
-in vec2 in_uv;
-in mat4 instance_model;
-in int instance_layer;
-
-uniform mat4 projection;
-uniform mat4 view;
-
-out vec3 v_normal;
-out vec3 v_fragPos;
-out vec2 v_uv;
-flat out int v_layer;
-
-void main() {
-    vec4 worldPos = instance_model * vec4(in_position,1.0);
-    gl_Position = projection * view * worldPos;
-
-    v_fragPos = worldPos.xyz;
-    v_normal = mat3(transpose(inverse(instance_model))) * in_normal;
-    v_uv = in_uv;
-    v_layer = instance_layer;
-}
-"""
-
-CHUNK_FRAGMENT_SHADER="""
-#version 330
-
-in vec3 v_normal;
-in vec3 v_fragPos;
-in vec2 v_uv;
-flat in int v_layer;
-
-out vec4 fragColor;
-
-uniform sampler2DArray atlasArray;
-uniform vec3 lightPos;
-uniform vec3 viewPos;
-
-void main() {
-    // Sample full RGBA texture
-    vec4 tex = texture(atlasArray, vec3(v_uv, v_layer));
-
-    // Discard fully transparent pixels (fixes black background)
-    if (tex.a < 0.1)
-        discard;
-
-    vec3 color = tex.rgb;
-    vec3 norm = normalize(v_normal);
-
-    // Lighting
-    vec3 lightDir = normalize(lightPos - v_fragPos);
-    float diff = max(dot(norm, lightDir), 0.0);
-
-    vec3 ambient = 0.4 * color;
-    vec3 diffuse = diff * color;
-
-    vec3 viewDir = normalize(viewPos - v_fragPos);
-    vec3 reflectDir = reflect(-lightDir, norm);
-    float spec = pow(max(dot(viewDir, reflectDir), 0.0), 16.0);
-
-    // Final color with alpha preserved
-    fragColor = vec4(ambient + diffuse + spec, tex.a);
-}
-"""
-
-# -------------------------
-# SIMPLE COLOR SHADER
-# -------------------------
-
-COLOR_VERTEX = """
-#version 330
-in vec3 in_pos;
-uniform mat4 mvp;
-void main(){
-    gl_Position = mvp * vec4(in_pos,1.0);
-}
-"""
-
-COLOR_FRAGMENT = """
-#version 330
-uniform vec3 color;
-out vec4 fragColor;
-void main(){
-    fragColor = vec4(color,1.0);
-}
-"""
-
-# -------------------------
-# CROSSHAIR SHADER
-# -------------------------
-
-CROSS_VERTEX = """
-#version 330
-in vec2 in_pos;
-void main(){
-    gl_Position = vec4(in_pos,0.0,1.0);
-}
-"""
-
-CROSS_FRAGMENT = """
-#version 330
-uniform vec3 color;
-out vec4 fragColor;
-void main(){
-    fragColor = vec4(color,1.0);
-}
-"""
-
-# -------------------------
-# INSTANCED TEXT SHADERS
-# -------------------------
-TEXT_VERTEX = """
-#version 330
-
-in vec2 in_pos;
-in vec2 in_uv;
-
-in vec2 instance_pos;
-in vec2 instance_scale;
-in vec4 instance_uv;
-in vec3 instance_color;
-
-out vec2 v_uv;
-out vec3 v_color;
-
-void main() {
-    vec2 pos = in_pos * instance_scale + instance_pos;
-    gl_Position = vec4(pos, 0.0, 1.0);
-
-    v_uv = mix(instance_uv.xy, instance_uv.zw, in_uv);
-    v_color = instance_color;
-}
-"""
-
-TEXT_FRAGMENT = """
-#version 330
-in vec2 v_uv;
-in vec3 v_color;
-out vec4 fragColor;
-
-uniform sampler2D textTexture;
-
-void main() {
-    vec4 sampled = texture(textTexture, v_uv);
-    if (sampled.a < 0.1) discard;
-    fragColor = vec4(v_color,1.0) * sampled;
-}
-"""
-
-GUI_VERTEX = """
-#version 330
-
-in vec2 in_pos;
-
-in vec2 instance_pos;
-in vec2 instance_size;
-in vec3 instance_color;
-
-out vec2 v_size;
-out vec3 v_color;
-out vec2 v_local;
-
-void main() {
-    vec2 pos = in_pos * instance_size + instance_pos;
-    gl_Position = vec4(pos, 0.0, 1.0);
-
-    v_color = instance_color;
-    v_local = in_pos;
-    v_size = instance_size;
-}
-"""
-
-GUI_FRAGMENT = """
-#version 330
-
-in vec3 v_color;
-in vec2 v_local;
-in vec2 v_size;
-
-out vec4 fragColor;
-
-uniform float outline_thickness;
-
-void main() {
-    vec2 scaled = v_local * v_size;
-
-    float edge = min(
-        min(abs(scaled.x - v_size.x * 0.5), abs(scaled.x + v_size.x * 0.5)),
-        min(abs(scaled.y - v_size.y * 0.5), abs(scaled.y + v_size.y * 0.5))
-    );
-
-    if (edge < outline_thickness) {
-        fragColor = vec4(1.0);
-    } else {
-        fragColor = vec4(v_color, 1.0);
-    }
-}
-"""
-
-BACKGROUND_VERTEX = """
-#version 330
-in vec2 in_pos;
-out vec2 v_uv;
-
-void main() {
-    v_uv = (in_pos + 1.0) * 0.5; // map [-1,1] -> [0,1]
-    gl_Position = vec4(in_pos, 0.0, 1.0);
-}
-"""
-
-BACKGROUND_FRAGMENT = """
-#version 330
-in vec2 v_uv;
-out vec4 fragColor;
-
-uniform sampler2D bg_texture;
-
-void main() {
-    fragColor = texture(bg_texture, v_uv);
-}
-"""
 
 # -------------------------
 # CAMERA
@@ -1555,67 +1231,12 @@ def generate_chunk_at(offsett:list, generated_chunks, chunks, heightmap, rules, 
 def main(chunks_:dict,worldName,save_path,multiplayer:bool=False,address="", gen_cnk:list[list[int]]=[[0, 0, 0]]):
     global window,ctx,gui,menu_stuff,text_buffer,send,generating,chunk_prog
 
-    print(gen_cnk)
     generated_chunks:list[list[int]] = gen_cnk
     chunks = list[Chunk]()
 
     frame_passed = 0
     selected_block = "grass"
     available_blocks = []
-
-    glfw.set_input_mode(window,glfw.CURSOR,glfw.CURSOR_DISABLED)
-
-    prog=ctx.program(vertex_shader=VERTEX_SHADER,fragment_shader=FRAGMENT_SHADER)
-    color_prog=ctx.program(vertex_shader=COLOR_VERTEX,fragment_shader=COLOR_FRAGMENT)
-    cross_prog=ctx.program(vertex_shader=CROSS_VERTEX,fragment_shader=CROSS_FRAGMENT)
-    text_prog["textTexture"] = 0
-
-    #Load multiple textures
-    #read textures
-    textures = []
-    TEXTURE_INDICES = {}
-    directory = 'assets/textures'
-    for idx, filename in enumerate(os.listdir(directory)):
-        if filename.endswith('.png'):
-            textures.append(Image.open(directory+"/"+filename))
-            TEXTURE_INDICES[filename.removesuffix(".png")] = idx
-            available_blocks.append(filename.removesuffix(".png"))
-
-    OPPOSITE_TEXTURE_INDICES = {}
-    for texture_number, texture_name in enumerate(TEXTURE_INDICES):
-        OPPOSITE_TEXTURE_INDICES[texture_number] = texture_name
-
-    tex_array = load_texture_array(ctx, textures)
-    data = tex_array.read(alignment=1)
-    width = tex_array.width
-    height = tex_array.height
-    tex_layers = tex_array.layers
-    components = 4
-    arr = np.frombuffer(data, dtype=np.uint8)
-    arr = arr.reshape((tex_layers, height, width, components))
-    tile_cols = math.ceil(math.sqrt(tex_layers))
-    tile_rows = math.ceil(tex_layers / tile_cols)
-
-    tile_w = width
-    tile_h = height
-
-    out = Image.new("RGBA", (tile_cols * tile_w, tile_rows * tile_h))
-
-    for i in range(tex_layers):
-        img = Image.fromarray(arr[i], mode="RGBA").transpose(Image.FLIP_TOP_BOTTOM)
-
-        x = (i % tile_cols) * tile_w
-        y = (i // tile_cols) * tile_h
-
-        out.paste(img, (x, y))
-
-    out.save("chunks/texture.png")
-
-    tex_array.use(location=0)
-    prog['atlasArray'] = 0
-    chunk_tex = load_texture_array(ctx, [out])
-    chunk_tex.use(location=1)
-    chunk_prog['atlasArray'] = 1
 
     occupied:set[tuple[float, float, float]]=set()
     blocks:list[Block] = []
@@ -1738,6 +1359,7 @@ def main(chunks_:dict,worldName,save_path,multiplayer:bool=False,address="", gen
                 if generated_chunk_this_frame and not waiting_for_thread_finish: break
                 if waiting_for_thread_finish:
                     generate_chunk_at([prev_x, 0, prev_z], generated_chunks, chunks, heightmap, rules, TEXTURE_INDICES, OPPOSITE_TEXTURE_INDICES, False, prog)
+                    OBJECTSTORENDER.append(chunks[-1])
                 elif not [x, 0, z] in generated_chunks:
                     #blocks/tot_blocks*100=percentage
                     generate_chunk_at([x, 0, z], generated_chunks, chunks, heightmap, rules, TEXTURE_INDICES, OPPOSITE_TEXTURE_INDICES, True, prog)
@@ -1794,7 +1416,8 @@ def main(chunks_:dict,worldName,save_path,multiplayer:bool=False,address="", gen
                 cnk.is_player_in = True
             else:
                 cnk.is_player_in = False
-            cnk.render()
+
+        render()
 
         if hasattr(camera, "players"):
             camera.players.render()
@@ -1934,26 +1557,6 @@ def load_files(worldName,save_path):
     return chunks, gn_cnk
 
 if __name__=="__main__":
-    glfw.init()
-    window=glfw.create_window(WIDTH,HEIGHT,"Voxel Engine",None,None)
-    glfw.make_context_current(window)
-    icon = Image.open("assets/icon.png").convert("RGBA")
-    width, height = icon.size
-    pixels = np.array(icon, dtype=np.uint8)
-    glfw.set_window_icon(window, 1, [(width, height, pixels)])
-    ctx=moderngl.create_context()
-    glfw.set_char_callback(window, char_callback)
-    glfw.set_key_callback(window, key_callback)
-    ctx.enable(moderngl.DEPTH_TEST)
-    ctx.enable(moderngl.BLEND)
-    ctx.blend_func = moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA
-
-    gui_prog = ctx.program(vertex_shader=GUI_VERTEX, fragment_shader=GUI_FRAGMENT)
-    text_prog=ctx.program(vertex_shader=TEXT_VERTEX, fragment_shader=TEXT_FRAGMENT)
-    chunk_prog = ctx.program(vertex_shader=CHUNK_VERTEX_SHADER,fragment_shader=CHUNK_FRAGMENT_SHADER)
-    gui_prog['outline_thickness'].value = 0.02
-    
-
     #text parameters init
     CHARSET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789:.;,_-!? */€$%&£!ì^'()|="
 

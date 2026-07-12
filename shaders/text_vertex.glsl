@@ -1,0 +1,20 @@
+#version 330
+
+in vec2 in_pos;
+in vec2 in_uv;
+
+in vec2 instance_pos;
+in vec2 instance_scale;
+in vec4 instance_uv;
+in vec3 instance_color;
+
+out vec2 v_uv;
+out vec3 v_color;
+
+void main() {
+    vec2 pos = in_pos * instance_scale + instance_pos;
+    gl_Position = vec4(pos, 0.0, 1.0);
+
+    v_uv = mix(instance_uv.xy, instance_uv.zw, in_uv);
+    v_color = instance_color;
+}

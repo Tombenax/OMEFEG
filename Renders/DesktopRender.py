@@ -150,8 +150,6 @@ def init_all():
     ctx.enable(moderngl.BLEND)
     ctx.blend_func = moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA
 
-    glfw.set_input_mode(window,glfw.CURSOR,glfw.CURSOR_DISABLED)
-
     load_shaders()
 
     prog=ctx.program(vertex_shader=VERTEX_SHADER,fragment_shader=FRAGMENT_SHADER)

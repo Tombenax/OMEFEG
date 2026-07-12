@@ -26,7 +26,6 @@ from AnimationHandler import AnimationHandler
 #from ControllerHandler import ControllerHandler
 from ast import literal_eval
 from Renders.DesktopRender import *
-from proprieties_function import *
 
 
 WIDTH = 1280

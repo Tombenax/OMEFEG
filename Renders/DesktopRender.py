@@ -157,11 +157,11 @@ def init_all():
     prog=ctx.program(vertex_shader=VERTEX_SHADER,fragment_shader=FRAGMENT_SHADER)
     color_prog=ctx.program(vertex_shader=COLOR_VERTEX,fragment_shader=COLOR_FRAGMENT)
     cross_prog=ctx.program(vertex_shader=CROSS_VERTEX,fragment_shader=CROSS_FRAGMENT)
-    text_prog["textTexture"] = 0
     gui_prog = ctx.program(vertex_shader=GUI_VERTEX, fragment_shader=GUI_FRAGMENT)
     text_prog=ctx.program(vertex_shader=TEXT_VERTEX, fragment_shader=TEXT_FRAGMENT)
     chunk_prog = ctx.program(vertex_shader=CHUNK_VERTEX_SHADER,fragment_shader=CHUNK_FRAGMENT_SHADER)
     gui_prog['outline_thickness'].value = 0.02
+    text_prog["textTexture"] = 0
 
     load_textures()
 

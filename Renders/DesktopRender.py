@@ -162,8 +162,7 @@ def init_all():
     load_textures()
     load_shaders()
 
-if __name__ == "main.py":
-    init_all()
+init_all()
 
 from InstancedModel import InstancedModel
 

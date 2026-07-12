@@ -152,8 +152,6 @@ def init_all():
 
     glfw.set_input_mode(window,glfw.CURSOR,glfw.CURSOR_DISABLED)
 
-
-    load_textures()
     load_shaders()
 
     prog=ctx.program(vertex_shader=VERTEX_SHADER,fragment_shader=FRAGMENT_SHADER)
@@ -164,6 +162,8 @@ def init_all():
     text_prog=ctx.program(vertex_shader=TEXT_VERTEX, fragment_shader=TEXT_FRAGMENT)
     chunk_prog = ctx.program(vertex_shader=CHUNK_VERTEX_SHADER,fragment_shader=CHUNK_FRAGMENT_SHADER)
     gui_prog['outline_thickness'].value = 0.02
+
+    load_textures()
 
 init_all()
 

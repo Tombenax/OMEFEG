@@ -1582,7 +1582,7 @@ if __name__=="__main__":
 
     gui = InstancedGui(ctx, gui_prog)
     menu_stuff = InstancedText(ctx, text_prog, font_tex, CHARSET)
-    background = Background(ctx)
+    #background = Background(ctx)
     background.add("title screen", "assets/backgrounds/title_screen.png")
     background.set("title screen")
 

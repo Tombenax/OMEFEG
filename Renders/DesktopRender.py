@@ -86,7 +86,10 @@ def load_texture_array(ctx:moderngl.Context, textures):
     #tex_array.build_mipmaps()
     return tex_array
 
+available_blocks, TEXTURE_INDICES, OPPOSITE_TEXTURE_INDICES, tex_array, chunk_tex = [], {}, {}, None, None
+
 def load_textures():
+    global available_blocks, TEXTURE_INDICES, OPPOSITE_TEXTURE_INDICES, tex_array, chunk_tex
     #Load multiple textures
     #read textures
     textures = []

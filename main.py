@@ -1625,7 +1625,6 @@ if __name__=="__main__":
 
         mouse_pressed_last = mouse_now
         
-        background.render()
         ctx.disable(moderngl.DEPTH_TEST)
         gui.render()
         menu_stuff.render()
@@ -1668,7 +1667,6 @@ if __name__=="__main__":
                     send = False
                     break
 
-                background.render()
                 ctx.disable(moderngl.DEPTH_TEST)
                 gui.render()
                 menu_stuff.render()
@@ -1687,7 +1685,6 @@ if __name__=="__main__":
                     send = False
                     break
 
-                background.render()
                 ctx.disable(moderngl.DEPTH_TEST)
                 gui.render()
                 menu_stuff.render()
@@ -1711,7 +1708,6 @@ if __name__=="__main__":
                 send = False
                 break
 
-            background.render()
             ctx.disable(moderngl.DEPTH_TEST)
             gui.render()
             menu_stuff.render()

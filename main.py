@@ -25,7 +25,7 @@ from InstancedModel import InstancedModel
 from AnimationHandler import AnimationHandler
 #from ControllerHandler import ControllerHandler
 from ast import literal_eval
-from DesktopRender import *
+from Renders.DesktopRender import *
 
 
 WIDTH = 1280

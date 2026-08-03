@@ -103,10 +103,7 @@ def notification(message):
 import requests
 
 def get_username_and_uuid(username, password):
-    get_token = False
-    with open("token.txt", "r") as f:
-        if f.read().strip() == "":
-            get_token = True
+    get_token = True
     
     if get_token:
         url = "https://tombenax.pythonanywhere.com/login"

@@ -20,11 +20,13 @@ class Network:
     def send(self, data:str, should_return=True, recive_size=2048):
         try:
             self.client.send(str.encode(data))
+            return_data = self.client.recv(recive_size).decode()
             if should_return:
-                return self.client.recv(recive_size).decode()
+                return return_data
         except socket.error as e:
             print(e)
 
-#n = Network({"x":0, "y":0, "z":0, "name":"ServerOwner"})
-#print(n.id)
-#print(n.send("gimmietheDATA"))
+if __name__ == "__main__":
+    n = Network({"x":0, "y":0, "z":0, "name":"ServerOwner"})
+    print(n.id)
+    print(n.send("gimmietheDATA"))

@@ -22,6 +22,7 @@ cross_prog=None
 gui_prog=None
 text_prog=None
 chunk_prog=None
+window_should_close = False
 
 def char_callback(window, char):
     global text_buffer
@@ -137,7 +138,7 @@ def load_textures():
     chunk_tex.use(location=1)
     chunk_prog['atlasArray'] = 1
 
-def init_all():
+def init_all(char_callback, key_callback):
     global window,ctx,prog,color_prog,cross_prog,gui_prog,text_prog,chunk_prog
     glfw.init()
     window=glfw.create_window(WIDTH,HEIGHT,"OMEFEG",None,None)
@@ -166,12 +167,53 @@ def init_all():
 
     load_textures()
 
-init_all()
 
-from InstancedModel import InstancedModel
+init_all(char_callback, key_callback)
 
-OBJECTSTORENDER:list[InstancedModel] = []
+def get_variables():
+    return TEXTURE_INDICES, OPPOSITE_TEXTURE_INDICES, available_blocks
+
+
+OBJECTSTORENDER:list = []
+ALLOFGUI:list = []
 
 def render():
+    global window_should_close
+    glfw.poll_events()
+    window_should_close = glfw.window_should_close(window)
     for model in OBJECTSTORENDER:
         model.render()
+    ctx.disable(moderngl.DEPTH_TEST)
+    for gui in ALLOFGUI:
+        gui.render()
+    ctx.enable(moderngl.DEPTH_TEST)
+    glfw.swap_buffers(window)
+    return text_buffer, send, window_should_close
+
+def upate_parameters(
+        bk, projection, view, lightPos,
+        viewPos, funky_shaders,
+        chunk_projection, chunk_view,
+        chunk_lightPos, chunk_viewPos,
+        curr_frame
+        ):
+        ctx.clear(bk[0], bk[1], bk[2])
+        prog["projection"].write(projection)
+        prog["view"].write(view)
+        prog["lightPos"].value = lightPos
+        prog["viewPos"].write(viewPos)
+        if funky_shaders:
+            prog["frame"] = curr_frame
+            prog["chance"] = curr_frame / 1000
+        else:
+            prog["frame"] = curr_frame
+            prog["chance"] = -1
+        chunk_prog["projection"].write(chunk_projection)
+        chunk_prog["view"].write(chunk_view)
+        chunk_prog["lightPos"].value = chunk_lightPos
+        chunk_prog["viewPos"].write(chunk_viewPos)
+
+def set_textbuffer(value:str):
+    global text_buffer, send
+    text_buffer = value
+    send = False

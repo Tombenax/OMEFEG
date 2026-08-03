@@ -52,41 +52,33 @@ class InstancedModel:
 
         # reserve some memory initially
         self.instance_buffer = ctx.buffer(reserve=64 * 1024)
-
-        if not self.iscnk:
-            self.layer_buffer = ctx.buffer(reserve=4 * 1024)
+        self.layer_buffer = ctx.buffer(reserve=4 * 1024)
 
         # =========================================================
         # VAO
         # =========================================================
 
-        vao_content = [
-            (
-                self.vbo,
-                '3f 3f 2f',
-                'in_position',
-                'in_normal',
-                'in_uv'
-            ),
-            (
-                self.instance_buffer,
-                '16f/i',
-                'instance_model'
-            ),
-        ]
-
-        if not self.iscnk:
-            vao_content.append(
+        self.vao = ctx.vertex_array(
+            prog,
+            [
+                (
+                    self.vbo,
+                    '3f 3f 2f',
+                    'in_position',
+                    'in_normal',
+                    'in_uv'
+                ),
+                (
+                    self.instance_buffer,
+                    '16f/i',
+                    'instance_model'
+                ),
                 (
                     self.layer_buffer,
                     '1i/i',
                     'instance_layer'
-                )
-            )
-
-        self.vao = ctx.vertex_array(
-            prog,
-            vao_content,
+                ),
+            ],
             self.ibo
         )
 
@@ -165,24 +157,46 @@ class InstancedModel:
         # layers
         # ---------------------------------------------------------
 
-        if not self.iscnk:
+        if texture_names is None:
+            texture_names = []
 
-            layers = []
+        if isinstance(texture_names, (list, tuple)) and len(texture_names) > 0:
+            if len(texture_names) == 1 and isinstance(texture_names[0], (list, tuple)):
+                texture_names = list(texture_names[0])
+            elif all(isinstance(item, (list, tuple)) for item in texture_names):
+                texture_names = [item[0] if len(item) > 0 else "" for item in texture_names]
 
-            if not areInts:
+        if not isinstance(texture_names, (list, tuple)):
+            texture_names = [texture_names]
 
-                for tex in texture_names:
-                    layers.append(
-                        self.tex_mapping[tex.lower()]
-                    )
+        if len(texture_names) == 1 and len(positions) > 1:
+            texture_names = texture_names * len(positions)
 
-            else:
-                layers = texture_names
+        layers = []
 
-            self.layers = np.hstack((
-                self.layers,
-                np.array(layers, dtype='i4')
-            ))
+        if not areInts:
+            for tex in texture_names:
+                if isinstance(tex, (list, tuple)):
+                    tex = tex[0] if len(tex) > 0 else ""
+
+                if hasattr(tex, 'lower'):
+                    layer = self.tex_mapping.get(tex.lower())
+                    if layer is None:
+                        layer = self.tex_mapping.get(tex)
+                else:
+                    layer = self.tex_mapping.get(tex)
+
+                if layer is None:
+                    layer = 0
+
+                layers.append(layer)
+        else:
+            layers = texture_names
+
+        self.layers = np.hstack((
+            self.layers,
+            np.array(layers, dtype='i4')
+        ))
 
         self.dirty = True
 
@@ -246,12 +260,10 @@ class InstancedModel:
             index
         )
 
-        if not self.iscnk:
-
-            self.layers = np.delete(
-                self.layers,
-                index
-            )
+        self.layers = np.delete(
+            self.layers,
+            index
+        )
 
         self.dirty = True
 
@@ -290,14 +302,11 @@ class InstancedModel:
     # =============================================================
 
     def update_visible_buffers(self):
-
-        active_indices = np.where(self.active)[0]
-
         # ---------------------------------------------------------
         # visible models
         # ---------------------------------------------------------
 
-        self.visible_models = self.models[active_indices]
+        self.visible_models = self.models
 
         if len(self.visible_models) > 0:
 
@@ -310,16 +319,12 @@ class InstancedModel:
         # visible layers
         # ---------------------------------------------------------
 
-        if not self.iscnk:
+        self.visible_layers = self.layers
 
-            self.visible_layers = self.layers[active_indices]
-
-            if len(self.visible_layers) > 0:
-
-                layer_bytes = self.visible_layers.astype('i4').tobytes()
-
-                self.layer_buffer.orphan(len(layer_bytes))
-                self.layer_buffer.write(layer_bytes)
+        if len(self.visible_layers) > 0:
+            layer_bytes = self.visible_layers.astype('i4').tobytes()
+            self.layer_buffer.orphan(len(layer_bytes))
+            self.layer_buffer.write(layer_bytes)
 
         self.visible_count = len(self.visible_models)
 

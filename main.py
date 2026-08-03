@@ -121,31 +121,7 @@ class Camera:
 
     def get_world(self):
         if self.multiplayer:
-            bytes_lenght = int(self.network.client.recv(2048).decode())
-
-            _data_ = self.network.send("PLEASE,IWANTTHEWORLDPOSITIONS", recive_size=bytes_lenght)
-
-            models = json.loads(_data_)
-
-            bytes_lenght = int(self.network.client.recv(2048).decode())
-
-            _data_ = self.network.send("PLEASE,IWANTTHEWORLDTEXTURES", recive_size=bytes_lenght)
-            
-            layers = json.loads(_data_)
-
-            bytes_lenght = int(self.network.client.recv(2048).decode())
-
-            _data_ = self.network.send("PLEASE,IWANTTHEWORLDATTRIBUTES", recive_size=bytes_lenght)
-            
-            proprieties = json.loads(_data_)
-
-            for idx, propriety in enumerate(proprieties):
-                new_dict = {}
-                for i in [0, 1]:
-                    new_dict[i] = INTERACT_FUNCTION_CONVERSION[propriety[i]]
-                proprieties[idx] = new_dict
-
-            return models, layers, proprieties
+            return load_files("testSave", "saves")
 
     # -------------------------
     # VIEW
@@ -309,7 +285,7 @@ class Camera:
                     "blocks broken at": blocks_broken_positions,
                     "blocks placed at": blocks_placed_positions,
                     "chat message": message_to_send
-                      }
+                    }
 
             response = self.network.send(json.dumps(packet))
             if response != "recived":
@@ -342,21 +318,23 @@ class Camera:
                 if len(self.already_seen_destroyed) > 20:
                     self.already_seen_destroyed.pop(0)
 
-                    
-            
-            self.players.models = np.zeros((0,4,4), dtype='f4')
 
             for playerdata in playersdata:
-                self.players.add_instances(positions=[[playerdata[0], playerdata[1], playerdata[2]]], texture_names=["player"], rotations=[[math.radians(playerdata[4]), math.radians(playerdata[3]-90), 0]]) #+ALWAYS USE Z+ = FORWARD IN MODELS
+                playerdata = literal_eval(playerdata)
+                if len(self.players.models) > len(playerdata):
+                    self.players.add_instances(positions=[[0, 0, 0]], texture_names=["player"]) #+ALWAYS USE Z+ = FORWARD IN MODELS
+                self.players.move_instance(playerdata["id"], playerdata["pos"])
+                self.players.rotate_instance(playerdata["id"], [math.radians(playerdata["pitch"]), math.radians(playerdata["yaw"]-90), 0])
+                
 
             chat_owners = tuple(reversed(chat_data[0]))
             chat_messages = tuple(reversed(chat_data[1]))
 
-            for idx in range(len(chat_owners)):
+            for idx, (owner, message) in enumerate(zip(chat_owners, chat_messages)):
                 if len(self.chat.strings) > idx:
-                    self.chat.update_string(new_text=f"|{chat_owners[idx]}|:{chat_messages[idx]}", string_id=idx, pos=(-0.9, -0.9+idx/10))
+                    self.chat.update_string(new_text=f"|{owner}|:{message}", string_id=idx, pos=(-0.9, -0.9+idx/10))
                 else:
-                    self.chat.add_string(text=f"|{chat_owners[idx]}|:{chat_messages[idx]}", string_id=idx, pos=(-0.9, -0.9+idx/10))     
+                    self.chat.add_string(text=f"|{owner}|:{message}", string_id=idx, pos=(-0.9, -0.9+idx/10))     
 
 
         # -------------------------
@@ -566,6 +544,7 @@ class InstancedText:
         self.font_texture = font_texture
         self.charset = charset
         self.grid_size = grid_size
+        ALLOFGUI.append(self)
 
         # Quad (pos + uv)
         vertices = np.array([
@@ -704,6 +683,7 @@ class InstancedGui:
     def __init__(self, ctx, prog):
         self.ctx = ctx
         self.prog = prog
+        ALLOFGUI.append(self)
 
         vertices = np.array([
             [-0.5, -0.5],
@@ -827,6 +807,7 @@ class Background:
         self.ctx = ctx
         self.backgrounds = {}   # id -> texture
         self.current = None
+        ALLOFGUI.append(self)
 
         self.prog = ctx.program(
             vertex_shader=BACKGROUND_VERTEX,
@@ -937,291 +918,142 @@ def draw_hovered_cube(ctx, color_prog, projection, camera, hit_pos):
     color_prog['color'].value = (0,0,0)
     vao.render(mode=moderngl.LINES)
 
-text_buffer = ""
-send = False
-
-def char_callback(window, char):
-    global text_buffer
-    text_buffer += chr(char)
-
-def key_callback(window, key, scancode, action, mods):
-    global text_buffer,send
-
-    if action == glfw.PRESS:
-        if key == glfw.KEY_BACKSPACE:
-            text_buffer = text_buffer[:-1]
-        elif key == glfw.KEY_ENTER:
-            send = True
-
 
 def get_uv(u, v, block_id, ATLAS_BLOCKS):
-
     bx = block_id % ATLAS_BLOCKS
     by = ATLAS_BLOCKS - 1 - block_id // ATLAS_BLOCKS
 
     u /= ATLAS_BLOCKS
     v /= ATLAS_BLOCKS
 
-    u += bx/ATLAS_BLOCKS
-    v += by/ATLAS_BLOCKS
+    u += bx / ATLAS_BLOCKS
+    v += by / ATLAS_BLOCKS
 
     return (u, v)
 
 
-def export_and_load_chunk(models, _layers_, offsett, OPPOSITE_TEXTURE_INDICES):
-    ATLAS_SIZE = 320
-    BLOCK_SIZE = 64
-    FACE_SIZE = 16
-    ATLAS_BLOCKS = ATLAS_SIZE // BLOCK_SIZE
+_CUBE_MODEL_CACHE = {}
 
 
-    _layers = list(_layers_)
-
-    obj = []
-    
-    
-    # -------------------------------------------------
-    # LOAD CUBE
-    # -------------------------------------------------
-
-    base_vertices = []
-    base_uvs = []
-    base_normals = []
-    base_faces = []
-
-    with open("assets/models/block.obj", "r") as f:
-        for line in f:
-
-            if line.startswith("v "):
-                _, x, y, z = line.split()
-                base_vertices.append((float(x), float(y), float(z)))
-
-            elif line.startswith("vt "):
-                _, u, v = line.split()
-                base_uvs.append((float(u), float(v)))
-
-            elif line.startswith("vn "):
-                _, x, y, z = line.split()
-                base_normals.append((float(x), float(y), float(z)))
-
-            elif line.startswith("f "):
-                parts = line.strip().split()[1:]
-
-                face = []
-                for p in parts:
-                    v, vt, vn = p.split("/")
-                    face.append((int(v)-1, int(vt)-1, int(vn)-1))
-
-                base_faces.append(face)
-
-    base_vertices = np.array(base_vertices, dtype=np.float32)
-
-    # -------------------------------------------------
-    # OBJ
-    # -------------------------------------------------
-
-    v_offset = 1
-    vt_offset = 1
-    vn_offset = 1
+def _load_base_cube_data(obj_path="assets/models/block.obj"):
+    if obj_path in _CUBE_MODEL_CACHE:
+        return _CUBE_MODEL_CACHE[obj_path]
 
     positions = []
-    normals = []
     uvs = []
-    vertices = []
-    indices = []
-    vertex_map = {}
-    idx = 0
+    normals = []
+    faces = []
 
-    for model_index, model in enumerate(models):
+    with open(obj_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("v "):
+                _, x, y, z = line.split()
+                positions.append((float(x), float(y), float(z)))
+            elif line.startswith("vt "):
+                _, u, v = line.split()
+                uvs.append((float(u), float(v)))
+            elif line.startswith("vn "):
+                _, x, y, z = line.split()
+                normals.append((float(x), float(y), float(z)))
+            elif line.startswith("f "):
+                face = []
+                for p in line.split()[1:]:
+                    vals = p.split("/")
+                    face.append(
+                        (
+                            int(vals[0]) - 1,
+                            int(vals[1]) - 1 if len(vals) > 1 and vals[1] else 0,
+                            int(vals[2]) - 1 if len(vals) > 2 and vals[2] else 0,
+                        )
+                    )
+                faces.append(face)
 
-        obj.append(f"g block_{model_index}")
+    data = (
+        np.array(positions, dtype=np.float32),
+        np.array(uvs, dtype=np.float32),
+        np.array(normals, dtype=np.float32),
+        faces,
+    )
+    _CUBE_MODEL_CACHE[obj_path] = data
+    return data
 
-        block_id = int(_layers.pop(0))
+def add(x, y, z):
+    return x+y+z
 
-        mat = np.array([[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], list(model)+[1.0]], dtype=np.float32)
+def wrap_around(number, upper_limit):
+    if number > upper_limit:
+        number -= upper_limit - 1
+    
+    return number
 
-        # -------------------------------------------------
-        # TRANSFORM VERTICES
-        # -------------------------------------------------
+def export_and_load_chunk(models, _layers_, offsett):
+    new_verticies = []
+    data = _load_base_cube_data()
+    for i in models:
+        #generate verticies
+        for j in range(8): #number of verticies
+            for h in range(3): #number of normals per verticies
+                for k in range(3): #number of uv per uvs
+                    content = list(map(add, list(data[0][j]), i, offsett))
+                    content.extend(data[2][wrap_around(j+h, 5)])    #6 is the number of normals
+                    content.extend(data[1][wrap_around(j+k+h, 23)]) #24 is the number of uvs
+                    new_verticies.extend(content)
 
-        transformed = []
-        for v in base_vertices:
-            vec = np.array([v[0], v[1], v[2], 1.0], dtype=np.float32)
-            t = vec.dot(mat)
-            positions.append(t[:3])
-
-        # normals (unchanged per cube)
-        for n in base_normals:
-            normals.append(n)
-
-        # -------------------------------------------------
-        # UV + FACES
-        # -------------------------------------------------
-
-        for face in base_faces:
-
-            # quad -> triangulate
-            v0, v1, v2, v3 = face
-
-            uv_indices = []
-
-            for corner_i, (v_idx, vt_idx, vn_idx) in enumerate(face):
-
-                base_u, base_v = base_uvs[vt_idx]
-
-                u, v = get_uv(
-                    base_u,
-                    base_v,
-                    block_id,
-                    ATLAS_BLOCKS
-                )
-
-                uvs.append([u, v])
-
-                uv_indices.append(vt_offset)
-                vt_offset += 1
-
-            # triangle 1
-            obj.append(
-                f"f "
-                f"{v0[0]+v_offset}/{uv_indices[0]}/{v0[2]+vn_offset} "
-                f"{v1[0]+v_offset}/{uv_indices[1]}/{v1[2]+vn_offset} "
-                f"{v2[0]+v_offset}/{uv_indices[2]}/{v2[2]+vn_offset}"
-            )
-
-            face = []
-            for part in line.split()[1:]:
-                vals = part.split("/")
-
-                p = int(vals[0]) - 1
-
-                t = int(vals[1]) - 1 if len(vals) > 1 and vals[1] else 0
-
-                n = int(vals[2]) - 1 if len(vals) > 2 and vals[2] else 0
-                key = (p, t, n)
-                if key not in vertex_map:
-                    px, py, pz = positions[p]
-                    if len(normals) > 0:
-                        nx, ny, nz = normals[n]
-                    else:
-                        nx, ny, nz = (0.0, 1.0, 0.0)
-                    u, v = uvs[t]
-                    v = 1 - v
-                    vertices.extend([px, py, pz, nx, ny, nz, u, 1-v])
-                    vertex_map[key] = idx
-                    idx += 1
-                face.append(vertex_map[key])
-            for i in range(1, len(face)-1):
-                indices.extend([face[0], face[i], face[i+1]])
-
-            # triangle 2
-            obj.append(
-                f"f "
-                f"{v0[0]+v_offset}/{uv_indices[0]}/{v0[2]+vn_offset} "
-                f"{v2[0]+v_offset}/{uv_indices[2]}/{v2[2]+vn_offset} "
-                f"{v3[0]+v_offset}/{uv_indices[3]}/{v3[2]+vn_offset}"
-            )
-
-        v_offset += len(base_vertices)
-        vn_offset += len(base_normals)
-
-
-    for line in obj:
-        if line.startswith("v "):
-            _, x, y, z = line.split()
-            positions.append([float(x), float(y), float(z)])
-        elif line.startswith("vn "):
-            _, x, y, z = line.split()
-            normals.append([float(x), float(y), float(z)])
-        elif line.startswith("vt "):
-            _, u, v = line.split()
-            uvs.append([float(u), float(v)])
-        elif line.startswith("f "):
-            face = []
-            for part in line.split()[1:]:
-                vals = part.split("/")
-
-                p = int(vals[0]) - 1
-
-                t = int(vals[1]) - 1 if len(vals) > 1 and vals[1] else 0
-
-                n = int(vals[2]) - 1 if len(vals) > 2 and vals[2] else 0
-                key = (p, t, n)
-                if key not in vertex_map:
-                    px, py, pz = positions[p]
-                    if len(normals) > 0:
-                        nx, ny, nz = normals[n]
-                    else:
-                        nx, ny, nz = (0.0, 1.0, 0.0)
-                    u, v = uvs[t]
-                    v = 1 - v
-                    vertices.extend([px, py, pz, nx, ny, nz, u, 1-v])
-                    vertex_map[key] = idx
-                    idx += 1
-                face.append(vertex_map[key])
-            for i in range(1, len(face)-1):
-                indices.extend([face[0], face[i], face[i+1]])
-
-    return np.array(vertices, dtype='f4'), np.array(indices, dtype='i4')
-
-
-    #v, i = load_obj_for_moderngl_no_file(obj)
-
-    #return v, i
+    return np.array(new_verticies, dtype="f4"), np.array(list(cube_i) * len(models), dtype="f4")
+        
 
 v, i, pos, tex, ogterrain = None, None, None, None, None
 
 generate_new_chunk = None
 
-def generate_chunk_at(offsett:list, generated_chunks, chunks, heightmap, rules, TEXTURE_INDICES, OPPOSITE_TEXTURE_INDICES, thread_part, cube_prog):
-    global generating, waiting_for_thread_finish, generate_new_chunk, v, i, pos, tex, ogterrain
-    generating = True
-
-    def generate_blocks_and_return_blocks(offsett, heightmap, rules, chunks:list[Chunk], tex_mapping:dict[str:int], opp_tex_mapping:dict[int:str]): 
-            global v, i, pos, tex, ogterrain
-            new_chunk = Chunk(offsett, heightmap, rules, seed=seed)
-            result = new_chunk.get_blocks()
-            new_textures = []
-            new_positions = []
-            for i in result:
-                new_textures.append(tex_mapping[i.texture])
-                new_positions.append(i.position)
-            vi, ogterrain = export_and_load_chunk(new_positions, new_textures, tuple(offsett), opp_tex_mapping), new_chunk.get_blocks()
-            v, i = vi
-    if thread_part:
-        v, i, ogterrain = None, None, None
-
-        generate_new_chunk = threading.Thread(target=generate_blocks_and_return_blocks, args=(offsett, heightmap, rules, chunks, TEXTURE_INDICES, OPPOSITE_TEXTURE_INDICES), daemon=True)
-        generate_new_chunk.start()
-
-    waiting_for_thread_finish = True
-    if not generate_new_chunk.is_alive():
-        new_chunk = Chunk(
-            offsett,
-            None,
-            None,
-            True,
-            ogterrain,
-            False,
+def generate_chunk_class(offsett, terrain, ctx, cube_prog, chunk_prog, v, i, TEXTURE_INDICES, chunks, generated_chunks):
+    new_chunk = Chunk(
+        offsett,
+        None,
+        None,
+        True,
+        terrain,
+        False,
+        ctx,
+        cube_prog,
+        cube_v,
+        cube_i,
+        TEXTURE_INDICES,
+        seed,
+        InstancedModel(
             ctx,
-            cube_prog,
-            cube_v,
-            cube_i,
+            chunk_prog,
+            v,
+            i,
             TEXTURE_INDICES,
-            seed,
-            InstancedModel(
-                ctx,
-                chunk_prog,
-                v,
-                i,
-                {"texture":0},
-                True
-            )
+            True
         )
-        chunks.append(new_chunk)
-        waiting_for_thread_finish = False
-        generated_chunks.append(offsett)
-        generating = False
+    )
+    chunks.append(new_chunk)
+    waiting_for_thread_finish = False
+    generated_chunks.append(offsett)
+    OBJECTSTORENDER.append(new_chunk)
+
+def generate_blocks_and_return_blocks(offsett, heightmap, rules, chunks:list[Chunk], tex_mapping:dict[str:int], cube_prog, ctx, chunk_prog, generated_chunks): 
+    new_chunk = Chunk(offsett, heightmap, rules, seed=seed)
+    result = new_chunk.get_blocks()
+    new_textures = []
+    new_positions = []
+    for block in result:
+        new_textures.append(tex_mapping[block.texture])
+        new_positions.append(block.position)
+    mesh_vertices, mesh_indices = export_and_load_chunk(new_positions, new_textures, offsett)
+    print(mesh_vertices, mesh_indices)
+    v, i = mesh_vertices, mesh_indices
+    ogterrain = new_chunk.get_blocks()
+    generate_chunk_class(offsett, ogterrain, ctx, cube_prog, chunk_prog, v, i, tex_mapping, chunks, generated_chunks)
+
+def generate_chunk_at(offsett:list, chunks, heightmap, rules, TEXTURE_INDICES, cube_prog, ctx, chunk_prog, generated_chunks):
+    generate_new_chunk = threading.Thread(target=generate_blocks_and_return_blocks, args=(offsett, heightmap, rules, chunks, TEXTURE_INDICES, cube_prog, ctx, chunk_prog, generated_chunks), daemon=True)
+    generate_new_chunk.start()
 
 
 # -------------------------
@@ -1236,7 +1068,6 @@ def main(chunks_:dict,worldName,save_path,multiplayer:bool=False,address="", gen
 
     frame_passed = 0
     selected_block = "grass"
-    available_blocks = []
 
     occupied:set[tuple[float, float, float]]=set()
     blocks:list[Block] = []
@@ -1244,6 +1075,7 @@ def main(chunks_:dict,worldName,save_path,multiplayer:bool=False,address="", gen
     if not multiplayer:
         if chunks_ == None:
             new_chunk = Chunk([0, 0, 0], heightmap, rules, ctx=ctx, prog=prog, v=cube_v, i=cube_i, tex_mapping=TEXTURE_INDICES, seed=seed)
+            OBJECTSTORENDER.append(new_chunk)
             chunks.append(new_chunk)
             generated_chunks = [[0, 0, 0]]
             print("generated chunk at [0, 0, 0]")
@@ -1257,19 +1089,30 @@ def main(chunks_:dict,worldName,save_path,multiplayer:bool=False,address="", gen
                 for idx in range(len(models)):
                     occ.add(tuple(models[idx]))
                     bl.append(Block(layers[idx], list(models[idx]), layers[idx], proprieties[idx], False if layers[idx] == "water_1" else True))
-                chunks.append(Chunk(cnk[0], None, None, True, bl, False, None, seed=seed, ctx=ctx, prog=prog, v=cube_v, i=cube_i, tex_mapping=TEXTURE_INDICES))
+                chunks.append(Chunk(cnk[0], None, None, True, bl, False, seed=seed, ctx=ctx, prog=prog, v=cube_v, i=cube_i, tex_mapping=TEXTURE_INDICES))
+                OBJECTSTORENDER.append(chunks[-1])
                 blocks.extend(bl)
                 chunks[-1].occupied.update(occ)
-
-    camera=Camera([0,1,0], ctx, prog, text_prog, TEXTURE_INDICES, font_tex, CHARSET, multiplayer, address, 5000, window)
+                
+    if address == '': address = "0.0.0.0:0000"
+    a = address.split(":")
+    camera=Camera([0,1,0], ctx, prog, text_prog, TEXTURE_INDICES, font_tex, CHARSET, multiplayer, a[0], int(a[1]), window)
 
     if multiplayer:
-        #TODO REDO
-        models, layers, proprieties = camera.get_world()
-        print("finished")
-        for idx in range(len(models)):
-            occupied.add(models[idx])
-            blocks.append(Block(layers[idx], list(models[idx]), layers[idx], proprieties[idx]))
+        chunks_, gn_chunks = camera.get_world()
+        for cnk in chunks_.items():
+            models = cnk[1]["p"]
+            layers = cnk[1]["t"]
+            proprieties = cnk[1]["pr"]
+            occ = set()
+            bl:list[Block] = []
+            for idx in range(len(models)):
+                occ.add(tuple(models[idx]))
+                bl.append(Block(layers[idx], list(models[idx]), layers[idx], proprieties[idx], False if layers[idx] == "water_1" else True))
+            chunks.append(Chunk(cnk[0], None, None, True, bl, False, seed=seed, ctx=ctx, prog=prog, v=cube_v, i=cube_i, tex_mapping=TEXTURE_INDICES))
+            OBJECTSTORENDER.append(chunks[-1])
+            blocks.extend(bl)
+            chunks[-1].occupied.update(occ)
 
     glfw.set_cursor_pos_callback(window,lambda w,x,y:camera.process_mouse(x,y))
     projection = np.array(Matrix44.perspective_projection(60, WIDTH/HEIGHT, 0.1, 1000), dtype='f4')
@@ -1297,8 +1140,7 @@ def main(chunks_:dict,worldName,save_path,multiplayer:bool=False,address="", gen
 
     menu_stuff.add_string("Selected Block: grass", 1, pos=(-0.9, 0.75))
 
-    prev_x = 0
-    prev_z = 0
+    now_generating = None
 
     curr_frame = 0
 
@@ -1307,16 +1149,20 @@ def main(chunks_:dict,worldName,save_path,multiplayer:bool=False,address="", gen
 
     prev_cnk_pos = None
 
-    while not glfw.window_should_close(window):
+    window_should_close = render()[-1]
+
+    while not window_should_close:
         now=time.time()
         delta=now-last
         last=now
-        glfw.poll_events()
+        
         rounded_position = tuple(map(int, np.round(camera.position)))
         cnk_position = [rounded_position[0]//10*10, 0, rounded_position[2]//10*10]
 
         if prev_cnk_pos is not cnk_position:
             for ajk in chunks:
+                if type(ajk.position) is not list:
+                    ajk.position = list(ajk.position)
                 if cnk_position == ajk.position:
                     curr_cnk = ajk
             prev_cnk_pos = cnk_position
@@ -1327,7 +1173,7 @@ def main(chunks_:dict,worldName,save_path,multiplayer:bool=False,address="", gen
         msg_to_snd=""
         if send:
             msg_to_snd=text_buffer
-            text_buffer = ""
+            set_textbuffer("")
         cam_in_block = None
         listed_camera_position = list(map(int, np.round(camera.position)))
         listed_camera_position[1] += 1
@@ -1353,21 +1199,13 @@ def main(chunks_:dict,worldName,save_path,multiplayer:bool=False,address="", gen
         
         send=False
 
-        if not multiplayer:
-            generated_chunk_this_frame = False
+        if not multiplayer and False:
             for x, z in square_range([cnk_position[0], cnk_position[2]], 40, 10):
-                if generated_chunk_this_frame and not waiting_for_thread_finish: break
-                if waiting_for_thread_finish:
-                    generate_chunk_at([prev_x, 0, prev_z], generated_chunks, chunks, heightmap, rules, TEXTURE_INDICES, OPPOSITE_TEXTURE_INDICES, False, prog)
-                    OBJECTSTORENDER.append(chunks[-1])
-                elif not [x, 0, z] in generated_chunks:
-                    #blocks/tot_blocks*100=percentage
-                    generate_chunk_at([x, 0, z], generated_chunks, chunks, heightmap, rules, TEXTURE_INDICES, OPPOSITE_TEXTURE_INDICES, True, prog)
-                    prev_x = x
-                    prev_z = z
-                    generated_chunk_this_frame = True
-
-
+                if now_generating is None:
+                    now_generating = [x, 0, z]
+                    generate_chunk_at(now_generating, chunks, heightmap, rules, TEXTURE_INDICES, prog, ctx, chunk_prog, generated_chunks)
+                else:
+                    generate_chunk_at(now_generating, chunks, heightmap, rules, TEXTURE_INDICES, prog, ctx, chunk_prog, generated_chunks)
 
         #check if a button is pressed
         if not camera.enabled:
@@ -1375,21 +1213,19 @@ def main(chunks_:dict,worldName,save_path,multiplayer:bool=False,address="", gen
                 mx, my = glfw.get_cursor_pos(window)
                 gui.handle_click(mx, my, WIDTH, HEIGHT)
 
-        ctx.clear(0.1,0.1,0.12)
-        prog["projection"].write(projection.astype('f4').tobytes())
-        prog["view"].write(camera.get_view().astype('f4').tobytes())
-        prog["lightPos"].value = (camera.position[0], 50, camera.position[2])
-        prog["viewPos"].write(camera.position.astype('f4').tobytes())
-        if enable_funky_shaders:
-            prog["frame"] = curr_frame
-            prog["chance"] = curr_frame / 1000
-        else:
-            prog["frame"] = curr_frame
-            prog["chance"] = -1
-        chunk_prog["projection"].write(projection.astype('f4').tobytes())
-        chunk_prog["view"].write(camera.get_view().astype('f4').tobytes())
-        chunk_prog["lightPos"].value = (camera.position[0], 50, camera.position[2])
-        chunk_prog["viewPos"].write(camera.position.astype('f4').tobytes())
+        upate_parameters(
+            (0.1, 0.1, 0.12),
+            projection.astype('f4').tobytes(),
+            camera.get_view().astype('f4').tobytes(),
+            (camera.position[0], 50, camera.position[2]),
+            camera.position.astype('f4').tobytes(),
+            enable_funky_shaders,
+            projection.astype('f4').tobytes(),
+            camera.get_view().astype('f4').tobytes(),
+            (camera.position[0], 50, camera.position[2]),
+            camera.position.astype('f4').tobytes(),
+            curr_frame
+        )
 
         if hit:
             draw_hovered_cube(ctx, color_prog, projection, camera, hit)
@@ -1417,15 +1253,11 @@ def main(chunks_:dict,worldName,save_path,multiplayer:bool=False,address="", gen
             else:
                 cnk.is_player_in = False
 
-        render()
-
         if hasattr(camera, "players"):
             camera.players.render()
 
-        ctx.disable(moderngl.DEPTH_TEST)
         cross_prog["color"].value=(1, 1, 1)
         cross_vao.render(moderngl.LINES)
-        camera.chat.render()
         gui.render()
         if esc_key.is_pressed:
             gui.add(element_id="quit_button", pos=(0, 0), size=(0.7, 0.2), color=(0, 0, 0), callback=lambda:glfw.set_window_should_close(window, True))
@@ -1445,15 +1277,11 @@ def main(chunks_:dict,worldName,save_path,multiplayer:bool=False,address="", gen
             if not esc_key.is_pressed:
                 camera.enable(window)
             
-            text_buffer = ""
+            set_textbuffer("")
 
             menu_stuff.remove_string(3)
             gui.remove("chat_bk")
 
-        menu_stuff.render()
-        ctx.enable(moderngl.DEPTH_TEST)
-
-        glfw.swap_buffers(window)
         frame_passed += 1
         if time.time() - last_last >= 1:
             last_last = time.time()
@@ -1462,13 +1290,14 @@ def main(chunks_:dict,worldName,save_path,multiplayer:bool=False,address="", gen
 
         curr_frame += 1
 
+        text_buffer, send, window_should_close = render()
+
     if not multiplayer:
-        ctx.disable(moderngl.DEPTH_TEST)
-        background.set("titlescreen")
-        background.render()
+        #background.set("titlescreen")
+        #background.render()
         menu_stuff.add_string("Saving World...", 5, (0, 0))
         menu_stuff.render()
-        ctx.enable(moderngl.DEPTH_TEST)
+        text_buffer, send, window_should_close = render()
         #save_path = "saves"
         #worldName = "testSave"
         if worldName in os.listdir(save_path):
@@ -1507,7 +1336,7 @@ def main(chunks_:dict,worldName,save_path,multiplayer:bool=False,address="", gen
 def load_files(worldName,save_path):
     """Takes a world name and save path and transforms them into models and textures (layers) and block proprieties"""
     gn_cnk = []
-    chunks:dict[dict[list]] = {}
+    chunks = {}
 
     files:list[str] = os.listdir(save_path+"/"+worldName)
 
@@ -1523,7 +1352,7 @@ def load_files(worldName,save_path):
             continue
 
         if counter == 0:
-            chunks[literal_eval(file.split(")")[0]+")")] = {"p":None, "t":None, "pr":None}
+            chunks[tuple(literal_eval(file.split("]")[0]+"]"))] = {"p":None, "t":None, "pr":None}
             counter += 1
         elif counter == 2:
             counter = 0
@@ -1535,14 +1364,14 @@ def load_files(worldName,save_path):
                 content = f.read()
                 new_content = content.split(b"\xFF")
                 strings = [literal_eval(p.decode("utf-8")) for p in new_content if p]
-                chunks[literal_eval(file.split(")")[0]+")")]["p"] = strings
+                chunks[tuple(literal_eval(file.split("]")[0]+"]"))]["p"] = strings
 
         elif "textures" in file:
             with open(save_path+"/"+worldName+"/"+file, "rb") as f:
                 content = f.read()
                 new_content = content.split(b"\xFF") 
                 strings = [p.decode("utf-8") for p in new_content if p]
-                chunks[literal_eval(file.split(")")[0]+")")]["t"] = strings
+                chunks[tuple(literal_eval(file.split("]")[0]+"]"))]["t"] = strings
 
         elif "proprieties" in file:
             with open(save_path+"/"+worldName+"/"+file, "rb") as f:
@@ -1552,12 +1381,17 @@ def load_files(worldName,save_path):
                 for string_ in strings:
                     for string in string_:
                         string_[string] = INTERACT_FUNCTION_CONVERSION[string_[string]]
-                chunks[literal_eval(file.split(")")[0]+")")]["pr"] = strings
+                chunks[tuple(literal_eval(file.split("]")[0]+"]"))]["pr"] = strings
 
     return chunks, gn_cnk
 
+
+TEXTURE_INDICES, OPPOSITE_TEXTURE_INDICES, available_blocks = get_variables()
+
+
 if __name__=="__main__":
     #text parameters init
+
     CHARSET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789:.;,_-!? */€$%&£!ì^'()|="
 
     GRID_SIZE = 16  # 16x16 grid
@@ -1582,6 +1416,7 @@ if __name__=="__main__":
 
     gui = InstancedGui(ctx, gui_prog)
     menu_stuff = InstancedText(ctx, text_prog, font_tex, CHARSET)
+    ALLOFGUI.append(menu_stuff)
     #background = Background(ctx)
     #background.add("title screen", "assets/backgrounds/title_screen.png")
     #background.set("title screen")
@@ -1614,8 +1449,8 @@ if __name__=="__main__":
     gui.add(element_id="multiplayer", pos=(0, -0.3), size=(0.7, 0.2), color=(0, 0, 0), callback=lambda:set_variable_to_true(False, True))
     menu_stuff.add_string("multiplayer", 2, pos=(-0.23, -0.33))
 
-    while not go_on and not glfw.window_should_close(window):
-        glfw.poll_events()
+    while not go_on and not window_should_close:
+        
 
         mouse_now = glfw.get_mouse_button(window, glfw.MOUSE_BUTTON_LEFT) == glfw.PRESS
 
@@ -1625,12 +1460,7 @@ if __name__=="__main__":
 
         mouse_pressed_last = mouse_now
         
-        ctx.disable(moderngl.DEPTH_TEST)
-        gui.render()
-        menu_stuff.render()
-        ctx.enable(moderngl.DEPTH_TEST)
-        
-        glfw.swap_buffers(window)
+        text_buffer, send, window_should_close = render()
     
     gui.remove("load_world")
     gui.remove("erase_world")
@@ -1660,40 +1490,28 @@ if __name__=="__main__":
             menu_stuff.add_string("If you want to know why go to:", 2, (-0.9, 0.75))
             menu_stuff.add_string("http://tombenax.pythonanywhere.com", 3, (-0.9, 0.60))
             menu_stuff.add_string("/account/reason", 4, (-0.9, 0.45))
-            while True and not glfw.window_should_close(window):
-                glfw.poll_events()
+            while True and not window_should_close:
                 menu_stuff.update_string(0, text_buffer, pos=(-0.5, 0))
                 if send:
                     send = False
                     break
 
-                ctx.disable(moderngl.DEPTH_TEST)
-                gui.render()
-                menu_stuff.render()
-                ctx.enable(moderngl.DEPTH_TEST)
-                
-                glfw.swap_buffers(window)
+                text_buffer, send, window_should_close = render()
             
             playernaim = text_buffer
-            text_buffer = ""
+            set_textbuffer("")
 
             menu_stuff.update_string(1, "Input your password:")
-            while True and not glfw.window_should_close(window):
-                glfw.poll_events()
+            while True and not window_should_close:
                 menu_stuff.update_string(0, text_buffer, pos=(-0.5, 0))
                 if send:
                     send = False
                     break
 
-                ctx.disable(moderngl.DEPTH_TEST)
-                gui.render()
-                menu_stuff.render()
-                ctx.enable(moderngl.DEPTH_TEST)
-                
-                glfw.swap_buffers(window)
+                text_buffer, send, window_should_close = render()
             
             password = text_buffer
-            text_buffer = ""
+            set_textbuffer("")
 
             with open("data.txt", "w") as f:
                 f.write(playernaim)
@@ -1701,24 +1519,19 @@ if __name__=="__main__":
                 f.write(password)
         
         menu_stuff.update_string(1, "Input the server IPv4 address:")
-        while True and not glfw.window_should_close(window):
-            glfw.poll_events()
+        while True and not window_should_close:
+            
             menu_stuff.update_string(0, text_buffer, pos=(-0.5, 0))
             if send:
                 send = False
                 break
 
-            ctx.disable(moderngl.DEPTH_TEST)
-            gui.render()
-            menu_stuff.render()
-            ctx.enable(moderngl.DEPTH_TEST)
-            
-            glfw.swap_buffers(window)
+            text_buffer, send, window_should_close = render()
     
     menu_stuff.clear()
 
-    if not glfw.window_should_close(window):
+    if not window_should_close:
         main(chunks,worldName,save_path, multi, text_buffer, gen_cnk)
-        text_buffer = ""
+        set_textbuffer("")
     else:
         glfw.terminate()

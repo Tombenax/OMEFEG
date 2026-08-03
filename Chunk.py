@@ -9,7 +9,7 @@ class Chunk:
         self.is_player_in = isplayerin
         self.NotRendered = NotRendered
         if self.NotRendered:
-            self.NotRendered.add_instances([[0, 0, 0]], [["texture"]])
+            self.NotRendered.add_instances([[0, 0, 0]], ["texture"])
         self.is_enabled = False
         self.occupied = set()
         if ctx is not None and prog is not None and v is not None and i is not None and tex_mapping is not None:

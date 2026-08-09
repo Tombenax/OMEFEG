@@ -19,11 +19,12 @@ def generate_tree(x:int, y:int, z:int, type:str):
         tree_blocks["textures"].append(block_name)
     return tree_blocks
 
-from math import floor
+from math import floor, hypot
 from Block import Block
 from proprieties_functions import *
+from Vectors import *
 
-def generate_terrain(size=10, height_map=None, offsett:list=[0, 0, 0], rules:dict={"structures":[{"chance":97, "size":"oak_small_tree"}, {"chance":93, "size":"oak_medium_tree"}], "water":{"level":1, "depth":5}, "terrain_height":5}, random_seed:Random=Random()) -> list[Block]:
+def generate_terrain(size=10, height_map=None, offsett=[0, 0, 0], rules:dict={"structures":[{"chance":97, "size":"oak_small_tree"}, {"chance":93, "size":"oak_medium_tree"}], "water":{"level":1, "depth":5}, "terrain_height":5}, random_seed:Random=Random()) -> list[Block]:
     """
     Generates terrain as a list of [x, y, z] block positions.
     height_map: optional function f(x, z) -> y
@@ -149,8 +150,8 @@ def closest_range(start:int, stop:int, step:int=1) -> list[int]:
     
     return final_range
 
-def square_range(center: list[int], layers: int, step: int = 1) -> list[list[int]]:
-    cx, cy = center
+def square_range(center, layers: int, step: int = 1) -> list[list[int]]:
+    cx, _, cy = center
     result = []
 
     for r in range(layers + 1):
@@ -275,6 +276,11 @@ def bake_instanced_obj(
     indices = np.array(out_indices, dtype=np.uint32)
 
     return vertices, indices
+
+
+def find_distance_between_squares_2D(now_square_position:list[int], square_destination:list[int]):
+    return hypot(square_destination[0] - now_square_position[0], square_destination[1] - now_square_position[1])
+
 
 if __name__ == "__main__":
     #put tests here

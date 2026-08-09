@@ -110,16 +110,25 @@ class InstancedModel:
         active=True
     ):
 
-        new_models = []
+        if not isinstance(positions, np.ndarray):
+            positions = np.asarray(positions, dtype='f4')
 
-        for i, pos in enumerate(positions):
+        if positions.ndim == 1:
+            positions = positions.reshape(1, 3)
 
-            translation = Matrix44.from_translation(
-                pos,
-                dtype='f4'
-            )
-
-            if rotations is not None:
+        if rotations is None:
+            new_models = np.eye(4, dtype='f4').reshape(1, 4, 4)
+            new_models = np.repeat(new_models, len(positions), axis=0)
+            new_models[:, 3, 0] = positions[:, 0]
+            new_models[:, 3, 1] = positions[:, 1]
+            new_models[:, 3, 2] = positions[:, 2]
+        else:
+            new_models = []
+            for i, pos in enumerate(positions):
+                translation = Matrix44.from_translation(
+                    pos,
+                    dtype='f4'
+                )
 
                 rx, ry, rz = rotations[i]
 
@@ -130,16 +139,12 @@ class InstancedModel:
                 rotation = rot_y * rot_x * rot_z
 
                 model = translation * rotation
+                new_models.append(model)
 
-            else:
-                model = translation
-
-            new_models.append(model)
-
-        new_models = np.array(new_models, dtype='f4')
+            new_models = np.array(new_models, dtype='f4')
 
         # append matrices
-        self.models = np.vstack((self.models, new_models))
+        self.models = np.concatenate((self.models, new_models), axis=0)
 
         # append active flags
         if active:
@@ -243,7 +248,7 @@ class InstancedModel:
     # REMOVE INSTANCE
     # =============================================================
 
-    def remove_instance(self, position:tuple):
+    def remove_instance(self, position):
         index = self.find_instance_at_position(position)
 
         if not (0 <= index < len(self.models)):

@@ -1,0 +1,68 @@
+{
+  "elements": [
+    {
+      "type": "text",
+      "id": "title",
+      "text": "OMEFEG",
+      "pos": [0.0, 0.7],
+      "size": [0.15, 0.22],
+      "color": [1.0, 1.0, 1.0]
+    },
+    {
+      "type": "text",
+      "id": "subtitle",
+      "text": "Not OMOSEX",
+      "pos": [0.0, 0.48],
+      "size": [0.07, 0.10],
+      "color": [0.8, 0.8, 0.8]
+    },
+    {
+      "type": "button",
+      "id": "load_world",
+      "pos": [0.0, 0.18],
+      "size": ["load_world_label", 0.02],
+      "color": [0.08, 0.08, 0.08],
+      "callback": "load_world"
+    },
+    {
+      "type": "text",
+      "id": "load_world_label",
+      "text": "Load world",
+      "pos": [0.0, 0.15],
+      "size": [0.12, 0.18],
+      "color": [1.0, 1.0, 1.0]
+    },
+    {
+      "type": "button",
+      "id": "erase_world",
+      "pos": [0.0, -0.10],
+      "size": ["erase_world_label", 0.02],
+      "color": [0.08, 0.08, 0.08],
+      "callback": "erase_world"
+    },
+    {
+      "type": "text",
+      "id": "erase_world_label",
+      "text": "Erase world",
+      "pos": [0.0, -0.13],
+      "size": [0.12, 0.18],
+      "color": [1.0, 1.0, 1.0]
+    },
+    {
+      "type": "button",
+      "id": "multiplayer",
+      "pos": [0.0, -0.38],
+      "size": ["multiplayer_label", 0.02],
+      "color": [0.08, 0.08, 0.08],
+      "callback": "multiplayer"
+    },
+    {
+      "type": "text",
+      "id": "multiplayer_label",
+      "text": "Multiplayer",
+      "pos": [0.0, -0.41],
+      "size": [0.12, 0.18],
+      "color": [1.0, 1.0, 1.0]
+    }
+  ]
+}

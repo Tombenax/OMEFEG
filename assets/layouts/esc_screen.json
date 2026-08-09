@@ -1,0 +1,44 @@
+{
+  "elements": [
+    {
+      "type": "text",
+      "id": "title",
+      "text": "Pause Menu",
+      "pos": [0.0, 0.7],
+      "size": [0.15, 0.22],
+      "color": [1.0, 1.0, 1.0]
+    },
+    {
+      "type": "button",
+      "id": "back_to_game",
+      "pos": [0.0, 0.18],
+      "size": ["back_to_game_label", 0.02],
+      "color": [0.08, 0.08, 0.08],
+      "callback": "back_to_game"
+    },
+    {
+      "type": "text",
+      "id": "back_to_game_label",
+      "text": "Back to Game",
+      "pos": [0.0, 0.15],
+      "size": [0.12, 0.18],
+      "color": [1.0, 1.0, 1.0]
+    },
+    {
+      "type": "button",
+      "id": "save_and_quit",
+      "pos": [0.0, -0.10],
+      "size": ["save_and_quit_label", 0.02],
+      "color": [0.08, 0.08, 0.08],
+      "callback": "save_and_quit"
+    },
+    {
+      "type": "text",
+      "id": "save_and_quit_label",
+      "text": "Save and Quit",
+      "pos": [0.0, -0.13],
+      "size": [0.12, 0.18],
+      "color": [1.0, 1.0, 1.0]
+    }
+  ]
+}

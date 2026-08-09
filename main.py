@@ -1,5 +1,4 @@
 import copy
-
 import glfw
 import moderngl
 import numpy as np
@@ -7,7 +6,8 @@ from pyrr import Matrix44
 import time
 import math
 from PIL import Image, ImageDraw, ImageFont
-from utils import playsound, notification, get_username_and_uuid, square_range
+from wakepy import Method
+from utils import playsound, notification, get_username_and_uuid, square_range, find_distance_between_squares_2D
 import os
 import random
 from key import Key
@@ -18,6 +18,7 @@ from interact_function_conversion import INTERACT_FUNCTION_CONVERSION, REVERSE_I
 from perlineNoise import PerlinNoiseFactory
 from network import Network
 import hashlib
+import queue
 import threading
 from Chunk import Chunk
 from icecream import ic
@@ -26,14 +27,22 @@ from AnimationHandler import AnimationHandler
 #from ControllerHandler import ControllerHandler
 from ast import literal_eval
 from Renders.DesktopRender import *
+from concurrent.futures import ThreadPoolExecutor
 
 
 WIDTH = 1280
 HEIGHT = 720
 
+RENDER_DISTANCE = 10
+MAX_FRAME_TIME = 1.0 / 30.0
+MAX_CHUNKS_TO_START_PER_FRAME = 1
+MAX_CHUNK_CLASSES_TO_BUILD_PER_FRAME = 1
+
 generation_queue = []
 generating = False
 waiting_for_thread_finish = False
+chunk_lookup = {}
+visible_chunk_positions = set()
 
 def string_to_fixed_number(s, digits=10):
     # Create a hash (SHA-256 is common and stable)
@@ -607,23 +616,39 @@ class InstancedText:
                    pos=(-0.9, 0.9),
                    scale=(0.12, 0.18),
                    color=(1,1,1),
-                   spacing=0.05):
+                   spacing=None,
+                   auto_center=False):
 
         # If ID exists → replace
         if string_id in self.strings:
             self.remove_string(string_id)
 
         x, y = pos
-        start_index = len(self.instance_data)
         length = len(text)
 
+        spac_mult = 0.50
+
+        if spacing is None:
+            spacing = -scale[0] * spac_mult
+        elif isinstance(spacing, str) and spacing.lower() == "auto":
+            spacing = -scale[0] * spac_mult
+
+        glyph_width = scale[0]
+        glyph_step = glyph_width + spacing
+        total_width = (length * glyph_width) + max(length - 1, 0) * spacing
+
+        start_index = len(self.instance_data)
         new_data = []
+
+        if auto_center and length > 0:
+            x = x - ((length - 1) * glyph_step / 2.0)
+            x += 0.019 # Adjust for better centering
 
         for i, char in enumerate(text):
             u0, v0, u1, v1 = self.get_char_uv(char)
 
             new_data.append([
-                x + i * spacing, y,
+                x + i * glyph_step, y,
                 scale[0], scale[1],
                 u0, v0, u1, v1,
                 color[0], color[1], color[2]
@@ -636,6 +661,8 @@ class InstancedText:
         self.strings[string_id] = (start_index, length)
 
         self._upload()
+
+        return total_width, scale[1]
 
     # ❌ Remove string by ID
     def remove_string(self, string_id):
@@ -721,10 +748,13 @@ class InstancedGui:
             self.instance_buffer.write(self.instance_data.tobytes())
 
     # ➕ ADD (WITH ID)
-    def add(self, element_id, pos, size, color, callback=None):
+    def add(self, element_id, pos, size, color, callback=None, anchor="center"):
         # Replace if exists
         if element_id in self.elements:
             self.remove(element_id)
+
+        if anchor == "top_left":
+            pos = (pos[0] + size[0] / 2, pos[1] + size[1] / 2)
 
         new = np.array([[pos[0], pos[1], size[0], size[1],
                          color[0], color[1], color[2]]], dtype='f4')
@@ -798,6 +828,10 @@ class InstancedGui:
 
     # 🎨 RENDER
     def render(self):
+        if glfw.get_mouse_button(window, glfw.MOUSE_BUTTON_LEFT) == glfw.PRESS:
+            mx, my = glfw.get_cursor_pos(window)
+            gui.handle_click(mx, my, WIDTH, HEIGHT)
+
         if len(self.instance_data) > 0:
             self.vao.render(instances=len(self.instance_data))
 
@@ -989,27 +1023,69 @@ def wrap_around(number, upper_limit):
     
     return number
 
-def export_and_load_chunk(models, _layers_, offsett):
-    new_verticies = []
-    data = _load_base_cube_data()
-    for i in models:
-        #generate verticies
-        for j in range(8): #number of verticies
-            for h in range(3): #number of normals per verticies
-                for k in range(3): #number of uv per uvs
-                    content = list(map(add, list(data[0][j]), i, offsett))
-                    content.extend(data[2][wrap_around(j+h, 5)])    #6 is the number of normals
-                    content.extend(data[1][wrap_around(j+k+h, 23)]) #24 is the number of uvs
-                    new_verticies.extend(content)
+def export_and_load_chunk(models:list[list[int]], _layers_):
+    """
+    Fast chunk mesh builder.
 
-    return np.array(new_verticies, dtype="f4"), np.array(list(cube_i) * len(models), dtype="f4")
-        
+    This version keeps the same cube vertex/index layout, but it avoids all
+    per-block OBJ string generation and re-parsing. It performs the merge in
+    NumPy so the chunk export stays cheap even when a lot of blocks need to be
+    packed into one mesh.
+    """
+    if not models:
+        return np.zeros((0, 8), dtype='f4'), np.zeros((0,), dtype='i4')
+
+    ATLAS_SIZE = 320
+    BLOCK_SIZE = 64
+    ATLAS_BLOCKS = ATLAS_SIZE // BLOCK_SIZE
+
+    positions = np.asarray(models, dtype=np.float32)
+    layers = np.asarray(_layers_, dtype=np.int32)
+
+    if positions.ndim == 1:
+        positions = positions.reshape(1, 3)
+
+    base_vertices = cube_v.reshape(-1, 8).astype(np.float32)
+    base_indices = cube_i.astype(np.int32)
+
+    block_count = len(positions)
+
+    translated = np.repeat(base_vertices[None, :, :], block_count, axis=0)
+    translated[:, :, 0] += positions[:, 0][:, None]
+    translated[:, :, 1] += positions[:, 1][:, None]
+    translated[:, :, 2] += positions[:, 2][:, None]
+
+    uvs = translated[:, :, 6:8].copy()
+    atlas_u = uvs[:, :, 0]
+    atlas_v = uvs[:, :, 1]
+
+    bx = layers % ATLAS_BLOCKS
+    by = ATLAS_BLOCKS - 1 - (layers // ATLAS_BLOCKS)
+
+    atlas_u = atlas_u / ATLAS_BLOCKS + (bx[:, None] / ATLAS_BLOCKS)
+    atlas_v = atlas_v / ATLAS_BLOCKS + (by[:, None] / ATLAS_BLOCKS)
+
+    translated[:, :, 6] = atlas_u
+    translated[:, :, 7] = atlas_v
+
+    merged_vertices = translated.reshape(-1, 8)
+
+    vertex_offsets = np.arange(block_count, dtype=np.int32) * len(base_vertices)
+    merged_indices = np.repeat(base_indices[None, :], block_count, axis=0) + vertex_offsets[:, None]
+    merged_indices = merged_indices.reshape(-1)
+
+    return merged_vertices.astype('f4'), merged_indices.astype('i4')
 
 v, i, pos, tex, ogterrain = None, None, None, None, None
 
 generate_new_chunk = None
+chunk_work_queue = queue.Queue()
+chunk_worker_thread = None
+chunk_work_pending = set()
 
-def generate_chunk_class(offsett, terrain, ctx, cube_prog, chunk_prog, v, i, TEXTURE_INDICES, chunks, generated_chunks):
+
+def generate_chunk_class(offsett, terrain, ctx, cube_prog, chunk_prog, v, i, TEXTURE_INDICES, chunks):
+    global chunk_lookup, seed
     new_chunk = Chunk(
         offsett,
         None,
@@ -1032,28 +1108,110 @@ def generate_chunk_class(offsett, terrain, ctx, cube_prog, chunk_prog, v, i, TEX
             True
         )
     )
+    new_chunk.should_render = False
     chunks.append(new_chunk)
-    waiting_for_thread_finish = False
-    generated_chunks.append(offsett)
+    chunk_lookup[tuple(new_chunk.position)] = new_chunk
     OBJECTSTORENDER.append(new_chunk)
 
-def generate_blocks_and_return_blocks(offsett, heightmap, rules, chunks:list[Chunk], tex_mapping:dict[str:int], cube_prog, ctx, chunk_prog, generated_chunks): 
-    new_chunk = Chunk(offsett, heightmap, rules, seed=seed)
-    result = new_chunk.get_blocks()
-    new_textures = []
-    new_positions = []
-    for block in result:
-        new_textures.append(tex_mapping[block.texture])
-        new_positions.append(block.position)
-    mesh_vertices, mesh_indices = export_and_load_chunk(new_positions, new_textures, offsett)
-    print(mesh_vertices, mesh_indices)
-    v, i = mesh_vertices, mesh_indices
-    ogterrain = new_chunk.get_blocks()
-    generate_chunk_class(offsett, ogterrain, ctx, cube_prog, chunk_prog, v, i, tex_mapping, chunks, generated_chunks)
+cnkdata = []
 
-def generate_chunk_at(offsett:list, chunks, heightmap, rules, TEXTURE_INDICES, cube_prog, ctx, chunk_prog, generated_chunks):
-    generate_new_chunk = threading.Thread(target=generate_blocks_and_return_blocks, args=(offsett, heightmap, rules, chunks, TEXTURE_INDICES, cube_prog, ctx, chunk_prog, generated_chunks), daemon=True)
-    generate_new_chunk.start()
+def generate_chunk_at(offsett, chunks, heightmap, rules, TEXTURE_INDICES, cube_prog, ctx, chunk_prog):
+    try:
+        new_chunk = Chunk(offsett, heightmap, rules, seed=seed)
+        result = new_chunk.get_blocks()
+        new_textures = []
+        new_positions = []
+        for block in result:
+            new_textures.append(TEXTURE_INDICES[block.texture])
+            new_positions.append(block.position)
+
+        mesh_vertices, mesh_indices = export_and_load_chunk(new_positions, new_textures)
+        ogterrain = new_chunk.get_blocks()
+        cnkdata.append((offsett, ogterrain, ctx, cube_prog, chunk_prog, mesh_vertices, mesh_indices, TEXTURE_INDICES, chunks))
+    except Exception as e:
+        print(f"Error generating chunk at {offsett}: {e}")
+
+
+class Menu:
+    def __init__(self, ctx, text_prog, gui_prog, bk_prog, font_tex, CHARSET, active, callbacks:dict[str, callable]):
+        self.ctx = ctx
+        self.text_prog = text_prog
+        self.gui_prog = gui_prog
+        self.bk_prog = bk_prog
+        self.font_tex = font_tex
+        self.CHARSET = CHARSET
+        self._active = active
+        self.prev_active = active
+        self.callbacks = callbacks
+    
+    def load_layout(self, filename:str):
+        with open(f"assets/layouts/{filename}.json", "r") as f:
+            layout = json.load(f)
+
+        self.layout = layout
+        if self._active:
+            self._add_layout_elements(layout)
+
+    def _add_layout_elements(self, layout):
+        buttons = []
+        buttons_ids = []
+        texts = []
+        for element in layout.get("elements", []):
+            element_type = element.get("type")
+            element_id = element.get("id")
+            pos = tuple(element.get("pos", (0, 0)))
+            size = tuple(element.get("size", (None, 0)))
+            color = tuple(element.get("color", (1, 1, 1)))
+            text = element.get("text", "")
+            callback_name = element.get("callback")
+
+            callback = None
+            if callback_name:
+                callback = self.callbacks[callback_name]
+
+            if element_type == "button":
+                buttons.append((element_id, pos, size, color, callback))
+                buttons_ids.append(size[0])
+            elif element_type == "text":
+
+                w, h = menu_stuff.add_string(text, element_id, pos=pos, scale=size, color=color, auto_center=True)
+
+                if element_id in buttons_ids:
+                    buttons_list_idx = buttons_ids.index(element_id)
+                    button = buttons[buttons_list_idx]
+                    
+                    gui.add(button[0], button[1], [w+button[2][1], h+button[2][1]], button[3], button[4])
+
+
+    def active(self, value):
+        self._active = value
+        if self._active != self.prev_active:
+            self.prev_active = self._active
+            if self._active:
+                self._add_layout_elements(self.layout)
+            else:
+                for element in self.layout.get("elements", []):
+                    element_id = element.get("id")
+                    if element.get("type") == "button":
+                        gui.remove(element_id)
+                    elif element.get("type") == "text":
+                        menu_stuff.remove_string(element_id)
+
+esc_menu = None
+esc_key = None
+
+
+#callbacks functions for esc_menu
+def resume_game():
+    global esc_menu, esc_key
+    esc_menu.active(False)
+    esc_key.deactivate()
+
+save_quit = False
+
+def save_and_quit():
+    global save_quit
+    save_quit = True
 
 
 # -------------------------
@@ -1061,10 +1219,12 @@ def generate_chunk_at(offsett:list, chunks, heightmap, rules, TEXTURE_INDICES, c
 # -------------------------
 
 def main(chunks_:dict,worldName,save_path,multiplayer:bool=False,address="", gen_cnk:list[list[int]]=[[0, 0, 0]]):
-    global window,ctx,gui,menu_stuff,text_buffer,send,generating,chunk_prog
+    global window,ctx,gui,menu_stuff,text_buffer,send,generating,chunk_prog, esc_menu, esc_key, save_quit, cnkdata, chunk_lookup, visible_chunk_positions
 
     generated_chunks:list[list[int]] = gen_cnk
     chunks = list[Chunk]()
+    chunk_lookup = {}
+    visible_chunk_positions = set()
 
     frame_passed = 0
     selected_block = "grass"
@@ -1074,45 +1234,51 @@ def main(chunks_:dict,worldName,save_path,multiplayer:bool=False,address="", gen
 
     if not multiplayer:
         if chunks_ == None:
-            new_chunk = Chunk([0, 0, 0], heightmap, rules, ctx=ctx, prog=prog, v=cube_v, i=cube_i, tex_mapping=TEXTURE_INDICES, seed=seed)
-            OBJECTSTORENDER.append(new_chunk)
-            chunks.append(new_chunk)
+            #new_chunk = Chunk([0, 0, 0], heightmap, rules, ctx=ctx, prog=prog, v=cube_v, i=cube_i, tex_mapping=TEXTURE_INDICES, seed=seed)
+            generate_chunk_at([0, 0, 0], chunks, heightmap, rules, TEXTURE_INDICES, prog, ctx, chunk_prog)
+            generate_chunk_class(cnkdata[0][0], cnkdata[0][1], cnkdata[0][2], cnkdata[0][3], cnkdata[0][4], cnkdata[0][5], cnkdata[0][6], cnkdata[0][7], cnkdata[0][8])
+            cnkdata.pop(0)
             generated_chunks = [[0, 0, 0]]
             print("generated chunk at [0, 0, 0]")
         else:
             for cnk in chunks_.items():
+                cnk_pos = list[cnk[0]]
                 models = cnk[1]["p"]
                 layers = cnk[1]["t"]
                 proprieties = cnk[1]["pr"]
                 occ = set()
                 bl:list[Block] = []
                 for idx in range(len(models)):
-                    occ.add(tuple(models[idx]))
-                    bl.append(Block(layers[idx], list(models[idx]), layers[idx], proprieties[idx], False if layers[idx] == "water_1" else True))
-                chunks.append(Chunk(cnk[0], None, None, True, bl, False, seed=seed, ctx=ctx, prog=prog, v=cube_v, i=cube_i, tex_mapping=TEXTURE_INDICES))
-                OBJECTSTORENDER.append(chunks[-1])
-                blocks.extend(bl)
-                chunks[-1].occupied.update(occ)
+                    bl.append(Block(layers[idx], models[idx], layers[idx], proprieties[idx], False if layers[idx] == "water_1" else True))
+                    if bl[-1].collides:
+                        occ.add(models[idx])
+                mesh_vertices, mesh_indices = export_and_load_chunk(models, [TEXTURE_INDICES[layer] for layer in layers])
+                generate_chunk_class(cnk_pos, bl, ctx, prog, chunk_prog, mesh_vertices, mesh_indices, TEXTURE_INDICES, chunks)
+                generated_chunks.append(cnk_pos)
+                #chunks.append(Chunk(list(cnk[0]), None, None, True, bl, False, seed=seed, ctx=ctx, prog=prog, v=cube_v, i=cube_i, tex_mapping=TEXTURE_INDICES, should_render=False))
+                #blocks.extend(bl)
                 
     if address == '': address = "0.0.0.0:0000"
     a = address.split(":")
     camera=Camera([0,1,0], ctx, prog, text_prog, TEXTURE_INDICES, font_tex, CHARSET, multiplayer, a[0], int(a[1]), window)
+    print("Created camera")
 
     if multiplayer:
         chunks_, gn_chunks = camera.get_world()
         for cnk in chunks_.items():
+            cnk_pos = list[cnk[0]]
             models = cnk[1]["p"]
             layers = cnk[1]["t"]
             proprieties = cnk[1]["pr"]
             occ = set()
             bl:list[Block] = []
             for idx in range(len(models)):
-                occ.add(tuple(models[idx]))
-                bl.append(Block(layers[idx], list(models[idx]), layers[idx], proprieties[idx], False if layers[idx] == "water_1" else True))
-            chunks.append(Chunk(cnk[0], None, None, True, bl, False, seed=seed, ctx=ctx, prog=prog, v=cube_v, i=cube_i, tex_mapping=TEXTURE_INDICES))
-            OBJECTSTORENDER.append(chunks[-1])
-            blocks.extend(bl)
-            chunks[-1].occupied.update(occ)
+                bl.append(Block(layers[idx], models[idx], layers[idx], proprieties[idx], False if layers[idx] == "water_1" else True))
+                if bl[-1].collides:
+                    occ.add(models[idx])
+            mesh_vertices, mesh_indices = export_and_load_chunk(models, [TEXTURE_INDICES[layer] for layer in layers])
+            generate_chunk_class(cnk_pos, bl, ctx, prog, chunk_prog, mesh_vertices, mesh_indices, TEXTURE_INDICES, chunks)
+            generated_chunks.append(cnk_pos)
 
     glfw.set_cursor_pos_callback(window,lambda w,x,y:camera.process_mouse(x,y))
     projection = np.array(Matrix44.perspective_projection(60, WIDTH/HEIGHT, 0.1, 1000), dtype='f4')
@@ -1129,12 +1295,14 @@ def main(chunks_:dict,worldName,save_path,multiplayer:bool=False,address="", gen
 
     last=time.time()
     last_last = time.time()
+    last_chunk_activation = 0.0
 
     #define keys handlers
     change_block = Key(window, glfw.KEY_LEFT_ALT)
     get_block = Key(window, glfw.MOUSE_BUTTON_MIDDLE, True)
-    chat_key = Key(window, glfw.KEY_C, toggle=True)
-    esc_key = Key(window, glfw.KEY_ESCAPE, False, True)
+    chat_key = Key(window, glfw.KEY_C, toggle=True, only_activate=True)
+    esc_key = Key(window, glfw.KEY_ESCAPE, False, True, True)
+    chat_exit = Key(window, glfw.KEY_ESCAPE, False, False)
     
     menu_stuff.add_string("FPS: your computer is potato", 0, pos=(-0.9, 0.9), color=(1, 1, 1))
 
@@ -1151,20 +1319,38 @@ def main(chunks_:dict,worldName,save_path,multiplayer:bool=False,address="", gen
 
     window_should_close = render()[-1]
 
+    esc_menu = Menu(ctx, text_prog, gui_prog, bk_prog, font_tex, CHARSET, False, {
+        "back_to_game": resume_game,
+        "save_and_quit": save_and_quit
+    })
+    esc_menu.load_layout("esc_screen")
+
+    generate_chunks_time_taken = 0
+
+    bk_vao = ctx.vertex_array(
+            prog,
+            [],
+            None
+        )
+
+    worker = ThreadPoolExecutor()
+
+    square_range_lookup:dict = {}
+
     while not window_should_close:
+        if save_quit:
+            break
         now=time.time()
-        delta=now-last
+        delta = min(max(now - last, 0.0), MAX_FRAME_TIME)
         last=now
         
-        rounded_position = tuple(map(int, np.round(camera.position)))
+        rounded_position = list(map(int, np.round(camera.position)))
         cnk_position = [rounded_position[0]//10*10, 0, rounded_position[2]//10*10]
 
-        if prev_cnk_pos is not cnk_position:
-            for ajk in chunks:
-                if type(ajk.position) is not list:
-                    ajk.position = list(ajk.position)
-                if cnk_position == ajk.position:
-                    curr_cnk = ajk
+        if prev_cnk_pos != cnk_position:
+            curr_cnk = chunk_lookup.get(tuple(cnk_position))
+            if curr_cnk is None and chunks:
+                curr_cnk = chunks[0]
             prev_cnk_pos = cnk_position
 
         hit,normal=raycast(camera,curr_cnk.occupied)
@@ -1177,7 +1363,7 @@ def main(chunks_:dict,worldName,save_path,multiplayer:bool=False,address="", gen
         cam_in_block = None
         listed_camera_position = list(map(int, np.round(camera.position)))
         listed_camera_position[1] += 1
-        blocks_poss = list(map(lambda x: list(x.position), blocks))
+        blocks_poss = list(map(lambda x: x.position, blocks))
         
         if listed_camera_position in blocks_poss:
             cam_in_block = blocks[blocks_poss.index(listed_camera_position)]
@@ -1189,29 +1375,34 @@ def main(chunks_:dict,worldName,save_path,multiplayer:bool=False,address="", gen
         if camera.update(window,delta,curr_cnk.occupied,hit,normal,curr_cnk.blocksinstmodel,selected_block,curr_cnk.blocks,index,message_to_send=msg_to_snd,in_block=cam_in_block) == "ban":
             return
         camera.process_keyboard(window,delta,curr_cnk.occupied)
-        landing_chunk = list(np.round(camera.front.copy()))
-        landing_chunk[0] *= 10
-        landing_chunk[0] += cnk_position[0]
-        landing_chunk[1] *= 10
-        landing_chunk[1] += cnk_position[1]
-        landing_chunk[2] *= 10
-        landing_chunk[2] += cnk_position[2]
         
         send=False
 
-        if not multiplayer and False:
-            for x, z in square_range([cnk_position[0], cnk_position[2]], 40, 10):
-                if now_generating is None:
-                    now_generating = [x, 0, z]
-                    generate_chunk_at(now_generating, chunks, heightmap, rules, TEXTURE_INDICES, prog, ctx, chunk_prog, generated_chunks)
-                else:
-                    generate_chunk_at(now_generating, chunks, heightmap, rules, TEXTURE_INDICES, prog, ctx, chunk_prog, generated_chunks)
+        if not multiplayer:
+            generate_chunks_time_taken = time.time()
 
-        #check if a button is pressed
-        if not camera.enabled:
-            if glfw.get_mouse_button(window, glfw.MOUSE_BUTTON_LEFT) == glfw.PRESS:
-                mx, my = glfw.get_cursor_pos(window)
-                gui.handle_click(mx, my, WIDTH, HEIGHT)
+            if len(cnkdata) > 0:
+                generate_chunk_class(cnkdata[0][0], cnkdata[0][1], cnkdata[0][2], cnkdata[0][3], cnkdata[0][4], cnkdata[0][5], cnkdata[0][6], cnkdata[0][7], cnkdata[0][8])
+                cnkdata.pop(0)
+
+            params = (tuple(cnk_position), RENDER_DISTANCE, 10)
+
+            if not params in square_range_lookup:
+                sqr = square_range(params[0], params[1], params[2])
+                square_range_lookup[params] = sqr
+            else:
+                sqr = square_range_lookup[params]
+
+            for x, z in sqr:
+                chunk_pos = [x, 0, z]
+                if chunk_pos in generated_chunks:
+                    continue
+
+                generated_chunks.append(chunk_pos)
+
+                worker.submit(generate_chunk_at, chunk_pos, chunks, heightmap, rules, TEXTURE_INDICES, prog, ctx, chunk_prog)
+
+            generate_chunks_time_taken = time.time() - generate_chunks_time_taken
 
         upate_parameters(
             (0.1, 0.1, 0.12),
@@ -1247,11 +1438,25 @@ def main(chunks_:dict,worldName,save_path,multiplayer:bool=False,address="", gen
 
             menu_stuff.update_string(1, f"Selected Block: {selected_block.replace('_', ' ')}", pos=(-0.9, 0.75))
 
-        for cnk in chunks:
-            if cnk.position == cnk_position:
-                cnk.is_player_in = True
-            else:
-                cnk.is_player_in = False
+        nearby_positions = set()
+
+        for x, z in sqr:
+            nearby_positions.add((x, 0, z))
+
+        for old_pos in visible_chunk_positions - nearby_positions:
+            old_chunk = chunk_lookup.get(old_pos)
+            if old_chunk is not None:
+                old_chunk.should_render = False
+                old_chunk.is_player_in = False
+
+        for new_pos in nearby_positions:
+            new_chunk = chunk_lookup.get(new_pos)
+            if new_chunk is None:
+                continue
+            new_chunk.should_render = True
+            new_chunk.is_player_in = new_chunk.position == cnk_position
+
+        visible_chunk_positions = nearby_positions
 
         if hasattr(camera, "players"):
             camera.players.render()
@@ -1260,27 +1465,36 @@ def main(chunks_:dict,worldName,save_path,multiplayer:bool=False,address="", gen
         cross_vao.render(moderngl.LINES)
         gui.render()
         if esc_key.is_pressed:
-            gui.add(element_id="quit_button", pos=(0, 0), size=(0.7, 0.2), color=(0, 0, 0), callback=lambda:glfw.set_window_should_close(window, True))
-            menu_stuff.add_string("Save & Quit", 2, pos=(-0.23, -0.04))
-            camera.disable(window)
-        else:
-            menu_stuff.remove_string(2)
-            gui.remove("quit_button")
-            camera.enable(window)
+            esc_menu.active(True)
         
 
         if chat_key.is_pressed:
-            camera.disable(window)
             menu_stuff.add_string(text_buffer, 3, pos=(-0.9, -0.9), color=(1, 1, 1))
             gui.add(element_id="chat_bk", pos=(0.00, -0.95), size=(2.00, 0.5), color=(0,0,0))
-        else:
-            if not esc_key.is_pressed:
-                camera.enable(window)
-            
+            if chat_exit.is_pressed:
+                chat_key.deactivate()
+                esc_key.deactivate()
+                esc_menu.active(False)
+        else:            
             set_textbuffer("")
 
             menu_stuff.remove_string(3)
             gui.remove("chat_bk")
+
+        if chat_key.is_pressed or esc_key.is_pressed:
+            camera.disable(window)
+
+        elif not esc_key.is_pressed and not chat_key.is_pressed:
+            camera.enable(window)
+
+        elif esc_key.is_pressed and glfw.get_key(window, glfw.KEY_C) == glfw.PRESS:
+            esc_key.pressed = False
+
+        elif chat_key.is_pressed and glfw.get_key(window, glfw.KEY_ESCAPE) == glfw.PRESS:
+            chat_key.pressed = False
+
+        if not camera.enabled:
+            bk_vao.render(mode=moderngl.TRIANGLE_STRIP, vertices=4)
 
         frame_passed += 1
         if time.time() - last_last >= 1:
@@ -1295,9 +1509,9 @@ def main(chunks_:dict,worldName,save_path,multiplayer:bool=False,address="", gen
     if not multiplayer:
         #background.set("titlescreen")
         #background.render()
+        ctx.clear()
         menu_stuff.add_string("Saving World...", 5, (0, 0))
         menu_stuff.render()
-        text_buffer, send, window_should_close = render()
         #save_path = "saves"
         #worldName = "testSave"
         if worldName in os.listdir(save_path):
@@ -1306,90 +1520,74 @@ def main(chunks_:dict,worldName,save_path,multiplayer:bool=False,address="", gen
             print("not found")
             os.makedirs(save_path+"/"+worldName)
 
+        all_ = []
         for cnk in chunks:
-            with open(save_path+"/"+worldName+"/"+str(cnk.position)+"positions.chunkdata", "wb") as f:
-                for block_ in cnk.get_blocks():
-                    f.write(str.encode(str(block_.position)))
-                    f.write(bytes([255]))
+            blocks_ = []
+            for block_ in cnk.get_blocks():
+                new_dict = {}
+                for i in range(len(block_.proprieties)):
+                    new_dict[i] = REVERSE_INTERACT_FUNCTION_CONVERSION[block_.proprieties[i]]
+                data = {"position":block_.position, "texture":block_.texture, "proprieties":new_dict}
+                blocks_.append(data)
+            all_.append({"chunk" : list(cnk.position), "blocks" : blocks_})
+            print(list(cnk.position), "saved")
 
-            with open(save_path+"/"+worldName+"/"+str(cnk.position)+"textures.chunkdata", "wb") as f:
-                for block_ in cnk.get_blocks():
-                    f.write(str.encode(block_.texture))
-                    f.write(bytes([255]))
+        print("writing data...")
+        start = time.time()
+        with open(save_path+"/"+worldName+"/"+"data.json", "w") as f:
+            json.dump({"data" : all_}, f)
 
-            with open(save_path+"/"+worldName+"/"+str(cnk.position)+"proprieties.chunkdata", "wb") as f:
-                for block_ in cnk.get_blocks():
-                    new_dict = {}
-                    for i in range(len(block_.proprieties)):
-                        new_dict[i] = REVERSE_INTERACT_FUNCTION_CONVERSION[block_.proprieties[i]]
-                    block_.proprieties = new_dict
+        end = time.time() - start
+        sr = end // 60
+        s = end % 60
+        mr = sr // 60
+        m = sr % 60
+        h = mr % 60
 
-                    f.write(str.encode(str(block_.proprieties)))
-                    f.write(bytes([255]))
-        
-        with open(save_path+"/"+worldName+"/"+"gen_cnk.txt", "w") as f:
-            f.write(json.dumps(generated_chunks))
-    
-    glfw.terminate()
-    #block.export_chunk("chunks/chunk.obj", "chunks/texture.png")
+        print(f"Done!! in h:{h}, m:{m}, s:{s}")
+
+    worker.shutdown()
+
 
 def load_files(worldName,save_path):
     """Takes a world name and save path and transforms them into models and textures (layers) and block proprieties"""
     gn_cnk = []
     chunks = {}
 
-    files:list[str] = os.listdir(save_path+"/"+worldName)
-
-    with open(save_path+"/"+worldName+"/"+"gen_cnk.txt", "r") as f:
-        gn_cnk = json.loads(f.read())
-
-
-    counter = 0
-    
-
-    for file in files:
-        if file == "gen_cnk.txt":
-            continue
-
-        if counter == 0:
-            chunks[tuple(literal_eval(file.split("]")[0]+"]"))] = {"p":None, "t":None, "pr":None}
-            counter += 1
-        elif counter == 2:
-            counter = 0
-        else:
-            counter += 1
-        
-        if "positions" in file:
-            with open(save_path+"/"+worldName+"/"+file, "rb") as f: 
-                content = f.read()
-                new_content = content.split(b"\xFF")
-                strings = [literal_eval(p.decode("utf-8")) for p in new_content if p]
-                chunks[tuple(literal_eval(file.split("]")[0]+"]"))]["p"] = strings
-
-        elif "textures" in file:
-            with open(save_path+"/"+worldName+"/"+file, "rb") as f:
-                content = f.read()
-                new_content = content.split(b"\xFF") 
-                strings = [p.decode("utf-8") for p in new_content if p]
-                chunks[tuple(literal_eval(file.split("]")[0]+"]"))]["t"] = strings
-
-        elif "proprieties" in file:
-            with open(save_path+"/"+worldName+"/"+file, "rb") as f:
-                content = f.read()
-                new_content = content.split(b"\xFF") 
-                strings = [literal_eval(p.decode("utf-8")) for p in new_content if p]
-                for string_ in strings:
-                    for string in string_:
-                        string_[string] = INTERACT_FUNCTION_CONVERSION[string_[string]]
-                chunks[tuple(literal_eval(file.split("]")[0]+"]"))]["pr"] = strings
+    with open(save_path+"/"+worldName+"/"+"data.json", "r") as f:
+        data = json.loads(f.read())["data"]
+        for chunk in data:
+            for block in chunk["blocks"]:
+                new_dict = {}
+                for i in range(len(block["proprieties"])):
+                    new_dict[i] = INTERACT_FUNCTION_CONVERSION[block["proprieties"][str(i)]]
+                if tuple(chunk["chunk"]) not in chunks:
+                    chunks[tuple(chunk["chunk"])] = {"p":[], "t":[], "pr":[]}
+                chunks[tuple(chunk["chunk"])]["p"].append(block["position"])
+                chunks[tuple(chunk["chunk"])]["t"].append(block["texture"])
+                chunks[tuple(chunk["chunk"])]["pr"].append(new_dict)
 
     return chunks, gn_cnk
 
+multi = False
+def multiplayer():
+    global multi
+    multi = True
 
-TEXTURE_INDICES, OPPOSITE_TEXTURE_INDICES, available_blocks = get_variables()
+load = False
+def load_world():
+    global load
+    load = True
 
+erase = False
+def erase_world():
+    global erase
+    erase = True
 
 if __name__=="__main__":
+
+    TEXTURE_INDICES, OPPOSITE_TEXTURE_INDICES, available_blocks, ctx, prog, color_prog, cross_prog, gui_prog, text_prog, chunk_prog, bk_prog, window = init_all(char_callback, key_callback)
+
     #text parameters init
 
     CHARSET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789:.;,_-!? */€$%&£!ì^'()|="
@@ -1421,117 +1619,111 @@ if __name__=="__main__":
     #background.add("title screen", "assets/backgrounds/title_screen.png")
     #background.set("title screen")
 
-    go_on = False
-    load = False
-    multi = False
+    main_screen = Menu(ctx, text_prog, gui_prog, bk_prog, font_tex, CHARSET, True, {"load_world": load_world, "erase_world": erase_world, "multiplayer": multiplayer})
+    main_screen.load_layout("main_screen")
 
-    def set_variable_to_true(_load, multi_=False):
-        global go_on, load, multi
-
-        go_on = True
-        load = _load
-        multi = multi_
-
-        # 🔥 REMOVE UI IMMEDIATELY
-        gui.remove("load_world")
-        gui.remove("erase_world")
-        gui.remove("multiplayer")
-        menu_stuff.clear()
-        
     mouse_pressed_last = False
 
-    gui.add(element_id="load_world", pos=(0, 0.3), size=(0.7, 0.2), color=(0, 0, 0), callback=lambda:set_variable_to_true(True))
-    menu_stuff.add_string("load world", 0, pos=(-0.21, 0.27))
+    multi = False
+    load = False
+    erase = False
+    save_quit = False
 
-    gui.add(element_id="erase_world", pos=(0, 0), size=(0.7, 0.2), color=(0, 0, 0), callback=lambda:set_variable_to_true(False))
-    menu_stuff.add_string("erase world", 1, pos=(-0.23, -0.03))
-
-    gui.add(element_id="multiplayer", pos=(0, -0.3), size=(0.7, 0.2), color=(0, 0, 0), callback=lambda:set_variable_to_true(False, True))
-    menu_stuff.add_string("multiplayer", 2, pos=(-0.23, -0.33))
-
-    while not go_on and not window_should_close:
-        
-
-        mouse_now = glfw.get_mouse_button(window, glfw.MOUSE_BUTTON_LEFT) == glfw.PRESS
-
-        if mouse_now and not mouse_pressed_last:
-            mx, my = glfw.get_cursor_pos(window)
-            gui.handle_click(mx, my, WIDTH, HEIGHT)
-
-        mouse_pressed_last = mouse_now
-        
-        text_buffer, send, window_should_close = render()
-    
-    gui.remove("load_world")
-    gui.remove("erase_world")
-    gui.remove("multiplayer")
-    menu_stuff.clear()
-    ctx.clear(0, 0, 0)
-    glfw.swap_buffers(window)
-    ctx.clear()
-
-
-    worldName = "testSave"
-    save_path = "saves"
-    chunks,gen_cnk = None, None
-
-    if load:
-        chunks,gen_cnk = load_files(worldName,save_path)
-
-    if multi:
-        with open("data.txt", "r") as f:
-            if f.read().strip() == "":
-                ask = True
-            else:
-                ask = False
-        if ask:
-            menu_stuff.add_string("", 0, (0, 0))
-            menu_stuff.add_string("Input your Game Account:", 1)
-            menu_stuff.add_string("If you want to know why go to:", 2, (-0.9, 0.75))
-            menu_stuff.add_string("http://tombenax.pythonanywhere.com", 3, (-0.9, 0.60))
-            menu_stuff.add_string("/account/reason", 4, (-0.9, 0.45))
-            while True and not window_should_close:
-                menu_stuff.update_string(0, text_buffer, pos=(-0.5, 0))
-                if send:
-                    send = False
-                    break
-
-                text_buffer, send, window_should_close = render()
+    while True:
+        glfw.set_window_should_close(window, False)
+        window_should_close = False
+        save_quit = False
+        multi = False
+        erase = False
+        load = False
+        while not window_should_close and not erase and not load:
             
-            playernaim = text_buffer
-            set_textbuffer("")
+            """
+            mouse_now = glfw.get_mouse_button(window, glfw.MOUSE_BUTTON_LEFT) == glfw.PRESS
 
-            menu_stuff.update_string(1, "Input your password:")
-            while True and not window_should_close:
-                menu_stuff.update_string(0, text_buffer, pos=(-0.5, 0))
-                if send:
-                    send = False
-                    break
+            if mouse_now and not mouse_pressed_last:
+                mx, my = glfw.get_cursor_pos(window)
+                gui.handle_click(mx, my, WIDTH, HEIGHT)
 
-                text_buffer, send, window_should_close = render()
+            mouse_pressed_last = mouse_now
+            """
             
-            password = text_buffer
-            set_textbuffer("")
-
-            with open("data.txt", "w") as f:
-                f.write(playernaim)
-                f.write("\n")
-                f.write(password)
-        
-        menu_stuff.update_string(1, "Input the server IPv4 address:")
-        while True and not window_should_close:
-            
-            menu_stuff.update_string(0, text_buffer, pos=(-0.5, 0))
-            if send:
-                send = False
-                break
-
             text_buffer, send, window_should_close = render()
-    
-    menu_stuff.clear()
+        
+        main_screen.active(False)
+        glfw.swap_buffers(window)
+        ctx.clear()
 
-    if not window_should_close:
-        main(chunks,worldName,save_path, multi, text_buffer, gen_cnk)
-        set_textbuffer("")
-    else:
-        glfw.terminate()
+
+        worldName = "testSave"
+        save_path = "saves"
+        chunks,gen_cnk = None, None
+
+        if load:
+            chunks,gen_cnk = load_files(worldName,save_path)
+
+        if multi:
+            with open("data.txt", "r") as f:
+                if f.read().strip() == "":
+                    ask = True
+                else:
+                    ask = False
+            if ask:
+                menu_stuff.add_string("", 0, (0, 0))
+                menu_stuff.add_string("Input your Game Account:", 1)
+                menu_stuff.add_string("If you want to know why go to:", 2, (-0.9, 0.75))
+                menu_stuff.add_string("http://tombenax.pythonanywhere.com", 3, (-0.9, 0.60))
+                menu_stuff.add_string("/account/reason", 4, (-0.9, 0.45))
+                while True and not window_should_close:
+                    menu_stuff.update_string(0, text_buffer, pos=(-0.5, 0))
+                    if send:
+                        send = False
+                        break
+
+                    text_buffer, send, window_should_close = render()
+                
+                playernaim = text_buffer
+                set_textbuffer("")
+
+                menu_stuff.update_string(1, "Input your password:")
+                while True and not window_should_close:
+                    menu_stuff.update_string(0, text_buffer, pos=(-0.5, 0))
+                    if send:
+                        send = False
+                        break
+
+                    text_buffer, send, window_should_close = render()
+                
+                password = text_buffer
+                set_textbuffer("")
+
+                with open("data.txt", "w") as f:
+                    f.write(playernaim)
+                    f.write("\n")
+                    f.write(password)
+            
+            menu_stuff.update_string(1, "Input the server IPv4 address:")
+            while True and not window_should_close:
+                
+                menu_stuff.update_string(0, text_buffer, pos=(-0.5, 0))
+                if send:
+                    send = False
+                    break
+
+                text_buffer, send, window_should_close = render()
+        
+        menu_stuff.clear()
+
+        if not window_should_close:
+            set_textbuffer("")
+            print("Entering main")
+            main(chunks,worldName,save_path, multi, text_buffer, gen_cnk)
+            break
+        else:
+            break
+
+print("succesfully exited game")
+
+glfw.terminate()
+
+print("terminated GLFW window")

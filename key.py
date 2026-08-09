@@ -1,7 +1,7 @@
 import glfw
 
 class Key:
-    def __init__(self, window, key, mouse:bool=False, toggle:bool=False):
+    def __init__(self, window, key, mouse:bool=False, toggle:bool=False, only_activate:bool=False):
         self.window = window
         self.key = key
         self.pressed = False
@@ -10,7 +10,12 @@ class Key:
         if toggle:
             self.toggle_buffer = False
             self.idk = Key(window, key, mouse, False)
+        self.only_activate = only_activate
     
+    def deactivate(self):
+        self.toggle_buffer = False
+        self.pressed = False
+
     @property
     def is_pressed(self):
         if not self.toggle:
@@ -32,7 +37,7 @@ class Key:
                         self.pressed = False
         else:
             if self.idk.is_pressed:
-                if self.toggle_buffer:
+                if self.toggle_buffer and not self.only_activate:
                     self.toggle_buffer = False
                 else:
                     self.toggle_buffer = True

@@ -22,7 +22,9 @@ cross_prog=None
 gui_prog=None
 text_prog=None
 chunk_prog=None
+bk_prog = None
 window_should_close = False
+bk_vao = None
 
 def char_callback(window, char):
     global text_buffer
@@ -37,10 +39,10 @@ def key_callback(window, key, scancode, action, mods):
         elif key == glfw.KEY_ENTER:
             send = True
 
-VERTEX_SHADER, FRAGMENT_SHADER, COLOR_VERTEX, COLOR_FRAGMENT, CROSS_VERTEX, CROSS_FRAGMENT, GUI_VERTEX, GUI_FRAGMENT, TEXT_VERTEX, TEXT_FRAGMENT, CHUNK_VERTEX_SHADER, CHUNK_FRAGMENT_SHADER = [None] * 12
+VERTEX_SHADER, FRAGMENT_SHADER, COLOR_VERTEX, COLOR_FRAGMENT, CROSS_VERTEX, CROSS_FRAGMENT, GUI_VERTEX, GUI_FRAGMENT, TEXT_VERTEX, TEXT_FRAGMENT, CHUNK_VERTEX_SHADER, CHUNK_FRAGMENT_SHADER, BK_VERTEX_SHADER, BK_FRAGMENT_SHADER = [None] * 14
 
 def load_shaders():
-    global VERTEX_SHADER, FRAGMENT_SHADER, COLOR_VERTEX, COLOR_FRAGMENT, CROSS_VERTEX, CROSS_FRAGMENT, GUI_VERTEX, GUI_FRAGMENT, TEXT_VERTEX, TEXT_FRAGMENT, CHUNK_VERTEX_SHADER, CHUNK_FRAGMENT_SHADER
+    global VERTEX_SHADER, FRAGMENT_SHADER, COLOR_VERTEX, COLOR_FRAGMENT, CROSS_VERTEX, CROSS_FRAGMENT, GUI_VERTEX, GUI_FRAGMENT, TEXT_VERTEX, TEXT_FRAGMENT, CHUNK_VERTEX_SHADER, CHUNK_FRAGMENT_SHADER, BK_VERTEX_SHADER, BK_FRAGMENT_SHADER
 
     with open("shaders/vertex_shader.glsl", "r") as f:
         VERTEX_SHADER = f.read()
@@ -77,6 +79,12 @@ def load_shaders():
     
     with open("shaders/chunk_fragment.glsl", "r") as f:
         CHUNK_FRAGMENT_SHADER = f.read()
+
+    with open("shaders/bk_vertex.glsl", "r") as f:
+        BK_VERTEX_SHADER = f.read()
+    
+    with open("shaders/bk_fragment.glsl", "r") as f:
+        BK_FRAGMENT_SHADER = f.read()
 
 def load_texture_array(ctx:moderngl.Context, textures):
     width, height = textures[0].size
@@ -139,7 +147,7 @@ def load_textures():
     chunk_prog['atlasArray'] = 1
 
 def init_all(char_callback, key_callback):
-    global window,ctx,prog,color_prog,cross_prog,gui_prog,text_prog,chunk_prog
+    global window,ctx,prog,color_prog,cross_prog,gui_prog,text_prog,chunk_prog, bk_prog, bk_vao
     glfw.init()
     window=glfw.create_window(WIDTH,HEIGHT,"OMEFEG",None,None)
     glfw.make_context_current(window)
@@ -162,16 +170,20 @@ def init_all(char_callback, key_callback):
     gui_prog = ctx.program(vertex_shader=GUI_VERTEX, fragment_shader=GUI_FRAGMENT)
     text_prog=ctx.program(vertex_shader=TEXT_VERTEX, fragment_shader=TEXT_FRAGMENT)
     chunk_prog = ctx.program(vertex_shader=CHUNK_VERTEX_SHADER,fragment_shader=CHUNK_FRAGMENT_SHADER)
+    bk_prog = ctx.program(vertex_shader=BK_VERTEX_SHADER, fragment_shader=BK_FRAGMENT_SHADER)
+    bk_prog["uColor"].value = (0.0, 0.0, 0.0, 0.0)
     gui_prog['outline_thickness'].value = 0.02
     text_prog["textTexture"] = 0
 
+    bk_vao = ctx.vertex_array(bk_prog, [])
+
     load_textures()
 
+    return get_variables()
 
-init_all(char_callback, key_callback)
 
 def get_variables():
-    return TEXTURE_INDICES, OPPOSITE_TEXTURE_INDICES, available_blocks
+    return TEXTURE_INDICES, OPPOSITE_TEXTURE_INDICES, available_blocks, ctx, prog, color_prog, cross_prog, gui_prog, text_prog, chunk_prog, bk_prog, window
 
 
 OBJECTSTORENDER:list = []

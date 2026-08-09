@@ -45,9 +45,6 @@ Download the exe file from Github or go to: tombenax.pythonanywhere.com
 NERDS STUFF
 Modding is supported!! *
 
-DEVELOPER NOTES
-Hi, i'm 12 y.o., so please don't steal my game, i still have parents that can sue you.
-
 Hope you enjoy playing!!
 Rate the game from 0 to 5 and give me feedback!!
 

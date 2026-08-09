@@ -43,49 +43,49 @@ DOWNLOAD
 Download the exe file from Github or go to: tombenax.pythonanywhere.com
 
 NERDS STUFF
-Modding is supported!! *
+Modding is supported!! (read note)
 
 Hope you enjoy playing!!
 Rate the game from 0 to 5 and give me feedback!!
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-* Actually, i change my mind, it's not supported
+.
+.
+.
+.
+.
+.
+.
+.
+.
+.
+.
+.
+.
+.
+.
+.
+.
+.
+.
+.
+.
+.
+.
+.
+.
+.
+.
+.
+.
+.
+.
+.
+.
+.
+.
+.
+.
+.
+.
+.
+.
+note: Actually, i change my mind, it's not supported

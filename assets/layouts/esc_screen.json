@@ -39,6 +39,53 @@
       "pos": [0.0, -0.13],
       "size": [0.12, 0.18],
       "color": [1.0, 1.0, 1.0]
+    },
+    {
+      "type": "button",
+      "id": "incr_RD",
+      "pos": [0.7, -0.4],
+      "size": ["plus", 0.02],
+      "color": [0.08, 0.08, 0.08],
+      "callback": "incr_RD"
+    },
+    {
+      "type": "button",
+      "id": "decr_RD",
+      "pos": [-0.7, -0.4],
+      "size": ["minus", 0.02],
+      "color": [0.08, 0.08, 0.08],
+      "callback": "decr_RD"
+    },
+    {
+      "type": "button",
+      "id": "RD",
+      "pos": [0.0, -0.4],
+      "size": ["RDT", 0.02],
+      "color": [0.08, 0.08, 0.08]
+    },
+    {
+      "type": "text",
+      "id": "plus",
+      "text": "+",
+      "pos": [0.7, -0.45],
+      "size": [0.12, 0.18],
+      "color": [1, 1, 1]
+    },
+    {
+      "type": "text",
+      "id": "minus",
+      "text": "-",
+      "pos": [-0.7, -0.45],
+      "size": [0.12, 0.18],
+      "color": [1, 1, 1]
+    },
+    {
+      "type": "text",
+      "id": "RDT",
+      "text": "Render Distance: 5",
+      "pos": [0.0, -0.45],
+      "size": [0.12, 0.18],
+      "color": [1, 1, 1]
     }
   ]
 }

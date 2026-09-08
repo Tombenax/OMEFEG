@@ -1,4 +1,4 @@
-from InstancedModel import InstancedModel
+from DesktopRender import InstancedModel
 from math import radians
 import threading
 import time

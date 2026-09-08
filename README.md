@@ -16,10 +16,10 @@ MULTIPLAYER
 
 Currently multiplayer features are:
 
-- You can see other plaers
+- You can see other players
 - Goofy rotatiuons of the player when they look down
 - Insult each other in chat
-- Placing and Destroying blocks is coming soon
+- Placing and Destroying blocks
 
 HOW TO START MULTIPLAYER
 Check the video called "How to multiplayer.mp4" in the server directory
@@ -43,52 +43,13 @@ DOWNLOAD
 Download the exe file from Github or go to: tombenax.pythonanywhere.com
 
 NERDS STUFF
-Modding is supported!! *
+Modding is supported!!
+Clone the file called OMEFEGINTERFACER.py in your mod directory and import it in your file, than you can call various functions to control the game
+
+!!WARNING!! Modding is relatevely new.
 
 DEVELOPER NOTES
 Hi, i'm 12 y.o., so please don't steal my game, i still have parents that can sue you.
 
 Hope you enjoy playing!!
 Rate the game from 0 to 5 and give me feedback!!
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-* Actually, i change my mind, it's not supported

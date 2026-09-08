@@ -241,7 +241,7 @@ oak_planks
 0
 0
 0
-water_1
+water
 -1
 1
 0

@@ -1,57 +1,68 @@
-from utils import generate_terrain, bake_instanced_obj
-from Block import Block
-from InstancedModel import InstancedModel
 from random import Random
 
+from sympy import numer
+from utils import generate_terrain, export_and_load_chunk
+from Block import Block
+from allBlocks import *
+from Render import *
+from lists import *
+from Number import Number
+from typing import Callable, Any
+
 class Chunk:
-    def __init__(self, position, heightmap, rules, use_blocks=False, blocks:list[Block]=[], isplayerin=True, ctx=None, prog=None, v=None, i=None, tex_mapping=None, seed:Random=Random(), NotRendered:InstancedModel=None, should_render:bool=True):
+    def __init__(self, render, position:list[Number], seed:Random, heightmap:Callable, rules:dict[Any, Any], **kwargs):
+        self.blocks = BlocksList()
+
         self.position = position
-        self.is_player_in = isplayerin
-        self.NotRendered = NotRendered
-        self.should_render = should_render
-        if self.NotRendered:
-            self.NotRendered.add_instances([[0, 0, 0]], ["texture"])
-        self.is_enabled = False
-        self.occupied = set()
-        if ctx is not None and prog is not None and v is not None and i is not None and tex_mapping is not None:
-            self.blocksinstmodel = InstancedModel(ctx, prog, v, i, tex_mapping, False)
-        else:
-            self.blocksinstmodel = None
 
-        if not use_blocks:
-            self.blocks = generate_terrain(10, heightmap, position, rules, random_seed=seed)
-        else:
-            self.blocks = blocks
+        self.render = render
 
-        if self.blocksinstmodel:
-            positions = [tuple(block.position) for block in self.blocks]
-            layers = [block.texture for block in self.blocks]
-            texture_layers = []
-            for tex in layers:
-                if isinstance(tex, str):
-                    texture_layers.append(self.blocksinstmodel.tex_mapping.get(tex.lower(), self.blocksinstmodel.tex_mapping.get(tex, 0)))
-                else:
-                    texture_layers.append(int(tex))
+        terrain = generate_terrain(height_map=heightmap, offsett=position, rules_=rules, random_seed=seed, sin_world=True if kwargs.get("sin_world") else False, biomes=True if kwargs.get("biomes") else False)
 
-            self.blocksinstmodel.add_instances(positions, texture_layers, areInts=True)
-            self.occupied.update({position for position in positions})
-    
-    def get_blocks(self) -> list[Block]:
-        return self.blocks
-    
-    def render(self):
-        if self.should_render:
-            if self.NotRendered is not None:
-                if not self.is_player_in:
-                    self.NotRendered.render()
-            if self.blocksinstmodel is not None:
-                if self.is_player_in:
-                    self.blocksinstmodel.render()
-    
-    def add_block(self, block:Block):
-        self.blocksinstmodel.add_instances([block.position], [block.texture])
-        self.occupied.add(block.position)
-    
-    def remove_block(self, block:Block):
-        self.blocksinstmodel.remove_instance(block.position)
-        self.occupied.remove(block.position)
+        self.blocks.extend(terrain)
+
+        self.model:Model = Model(self.render)
+        self.model.add_model("block", vertices=CUBE_MODEL_INFO[0], indices=CUBE_MODEL_INFO[1], program=self.render.blocks_program)
+
+        self.model.add_instances(self.blocks.positions, self.blocks.textures, "block")
+
+        vertices, indices = export_and_load_chunk(self.blocks.positions, self.blocks.textures, CUBE_MODEL_INFO, TEXTURES_X, TEXTURES_Y)
+
+        self.model.add_model("dummy", vertices = vertices, indices = indices, program=self.render.chunk_program)
+
+        self.model.add_instances([[0, 0, 0]], [0], "dummy")
+
+        self.is_player_in = False
+
+        self.prev_is_player_in = False
+
+
+
+    def render_mesh(self):
+        if self.is_player_in != self.prev_is_player_in:
+            self.prev_is_player_in = self.is_player_in
+
+        if self.is_player_in and self.prev_is_player_in:
+            vertices, indices = export_and_load_chunk(self.blocks.positions, self.blocks.textures, CUBE_MODEL_INFO, TEXTURES_X, TEXTURES_Y)
+
+            self.model.remove_instance(0, "dummy")
+
+            self.model.add_model("dummy", vertices = vertices, indices = indices, program=self.render.chunk_program)
+
+            self.model.add_instances([[0, 0, 0]], [0], "dummy")
+
+        if self.is_player_in: self.model.render_one("block")
+        else: self.model.render_one("dummy")
+
+    def get_y_at(self, x:Number, z:Number) -> Number:
+        return self.get_block_pos_at(x, z)[1] + 1
+
+    def get_block_pos_at(self, x:Number, z:Number) -> list[numer]:
+        arr = np.array(self.blocks.positions)
+        return list(arr[(arr[:, 0] == x) & (arr[:, 2] == z)][0])
+
+    def get_block_at(self, position:list[Number]):
+        try:
+            return self.blocks.positions_blocks[tuple(position)]
+        except:
+            return None

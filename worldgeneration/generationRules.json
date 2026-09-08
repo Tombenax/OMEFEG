@@ -1,0 +1,10 @@
+{
+    "structures":
+    [
+        {"chance":3, "name":"oak_small_tree", "folder":"worldgeneration"},
+        {"chance":3, "name":"oak_medium_tree", "folder":"worldgeneration"},
+        {"chance":0.001, "name":"temple", "folder":"worldgeneration"}
+    ],
+    "water":{"level":3, "depth":5},
+    "terrain_height":5
+}

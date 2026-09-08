@@ -1,7 +1,11 @@
+import math
 from random import Random
+import random
+from decorators import cache
 
-def generate_tree(x:int, y:int, z:int, type:str):
-    with open(f"structures/{type}.txt", "r") as f:
+@cache
+def generate_tree(x:int, y:int, z:int, type:str, folder:str):
+    with open(f"{folder}/structures/{type}.txt", "r") as f:
         content = f.readlines()
     for j, k in enumerate(content):
         content[j] = k.strip()
@@ -24,7 +28,18 @@ from Block import Block
 from proprieties_functions import *
 from Vectors import *
 
-def generate_terrain(size=10, height_map=None, offsett=[0, 0, 0], rules:dict={"structures":[{"chance":97, "size":"oak_small_tree"}, {"chance":93, "size":"oak_medium_tree"}], "water":{"level":1, "depth":5}, "terrain_height":5}, random_seed:Random=Random()) -> list[Block]:
+def select(x, z, N, height_map):
+    y = height_map(x//10+0.1, z//10+0.1)-0.02
+    last = 0
+    th = 1/N
+    for idx in range(1, N+1):
+        if last >= y < th * idx:
+            return idx-1
+        last = th * idx
+
+
+@cache
+def generate_terrain(size=10, height_map=None, offsett=[0, 0, 0], rules_:dict[str, int | list[int] | str]={}, random_seed:random.Random=random.Random(random.randint(0, 9_223_372_036_854_775_807)), biomes=True, sin_world=False) -> list[Block]:
     """
     Generates terrain as a list of [x, y, z] block positions.
     height_map: optional function f(x, z) -> y
@@ -32,59 +47,95 @@ def generate_terrain(size=10, height_map=None, offsett=[0, 0, 0], rules:dict={"s
     """
     blocks:list[Block] = []
     trees = []
-    structures_rules = rules["structures"]
-    water_rules = rules["water"]
-    terrain_tickness = rules["terrain_height"]
-    all_water_ys = [-(i+int(water_rules["level"])) for i in range(int(water_rules["depth"]))]
     can_generate = True
+    if biomes:
+        bom = rules_["all"][select(offsett[0], offsett[2], len(rules_["all"]), height_map)]
+        rules = rules_[bom]["rules"]
+        vegetation = rules_[bom]
+    else:
+        bom = "plains"
+        rules = rules_[bom]["rules"]
+        rules["structures"] = []
+        vegetation = rules_[bom]
+
+
     for x in range(offsett[0], size+offsett[0]):
         for z in range(offsett[2], size+offsett[2]):
-            y = height_map(x/10, z/10) if height_map else 0
-            y *= 5
+            if not sin_world:
+                match rules["generationFormula"]:
+                    case "perlinNoise":
+                        y = height_map(x/10, z/10) if height_map else 0
+                        y *= 5
+
+                    case "flat":
+                        y = offsett[1]
+
+                    case "perlinFlat":
+                        y = height_map(x/10, z/10) if height_map else 0
+
+                    case "cone":
+                        h, j = offsett[0] + size/2, offsett[2] + size/2 #get center of the chunk and apply it to the offsett
+                        K = 0.5
+                        H = 15
+                        try:
+                            y = -(math.sqrt((x-h) ** 2 + (z-j) ** 2) / K - H)
+                        except ValueError:
+                            y = 0
+            else:
+                y = height_map(x/10, z/10) if height_map else 0
+                y *= 5
+
             y = floor(y)
             y += offsett[1]
-            block_type = "grass"
+
+            structures_rules = rules["structures"] # type: ignore
+            water_rules = rules["water"] # type: ignore
+            terrain_tickness = rules["terrain_height"] # type: ignore
+            all_water_ys = [-(i+int(water_rules["level"])) for i in range(int(water_rules["depth"]))] # type: ignore
+
+            block_type = vegetation["topBlock"] # type: ignore
             if y in all_water_ys:
-                block_type = "water_1"
+                block_type = "water"
                 for a in all_water_ys:
                     if y != a:
-                        blocks.append(Block(block_type, [x, a, z], block_type, {0:place, 1:destroy}, False))
+                        blocks.append(get_block(block_type, [x, a, z]))
 
             else:
                 if can_generate:
                     #generate structures
                     for i in structures_rules:
-                        if random_seed.randint(1, 1001) >= float(i["chance"]):
-                            if not "tree" in i["name"]:
+                        if random_seed.random() * 100 < float(i["chance"]): # type: ignore
+                            if not "tree" in i["name"]: # type: ignore
                                 trees.clear()
                                 can_generate = False
-                            trees.append(generate_tree(x, y, z, i["name"]))
+                            trees.append(generate_tree(x, y, z, i["name"], i["folder"])) # type: ignore
             
-            blocks.append(Block(block_type, [x, y, z], block_type, {0:place, 1:destroy}, False if block_type == "water_1" else True))
-            if block_type == "grass":
-                for i in range(1, terrain_tickness+1):
-                    blocks.append(Block("dirt", [x, y-i, z], "dirt", {0:place, 1:destroy}, True))
+            blocks.append(get_block(block_type, [x, y, z]))
+            if block_type == vegetation["topBlock"]:
+                for i in range(1, terrain_tickness+1): # type: ignore
+                    blocks.append(get_block(vegetation["bottomBlock"], [x, y-i, z]))
 
     for i in trees:
         for j, k in zip(i["positions"], i["textures"]):
-            blocks.append(Block(k, j, k, {0:place, 1:destroy}, True)) 
+            blocks.append(get_block(k, j))
 
     return blocks
 
-from pygame import mixer
-mixer.init()
+import openal
+from Number import Number
 
-_sound_cache = {}
-_channels = {}
+def playsound(sound:str, position:tuple[Number, Number, Number]=(0, 0, 0), sound_position:tuple[Number, Number, Number]=(0, 0, 0), orientation:tuple[Number, Number, Number, Number, Number, Number]=(0, 0, -1, 0, 1, 0), loop:bool=False):
+    listener = openal.oalGetListener()
+    listener.set_position(position)
+    listener.set_orientation(orientation)
 
-def playsound(path: str):
-    if path not in _sound_cache:
-        _sound_cache[path] = mixer.Sound(path)
+    source = openal.oalOpen(sound)
+    source.set_position(sound_position)
+    source.set_looping(loop)
+    source.play()
+    
+    return source
 
-    channel = _channels.get(path)
-
-    if channel is None or not channel.get_busy():
-        _channels[path] = _sound_cache[path].play()
 
 
 import asyncio
@@ -103,43 +154,27 @@ def notification(message):
 
 import requests
 
+@cache
 def get_username_and_uuid(username, password):
-    get_token = True
-    
-    if get_token:
-        url = "https://tombenax.pythonanywhere.com/login"
+    url = "https://tombenax.pythonanywhere.com/login"
 
-        data = {
-            "username": username,
-            "password": password,
-            "client": "game"
-        }
+    data = {
+        "username": username,
+        "password": password,
+        "client": "game"
+    }
 
-        r = requests.post(url, data=data)
-        res = r.json()
+    r = requests.post(url, data=data)
+    res = r.json()
 
-        if res["status"] == "valid":
-            with open("token.txt", "w") as f:
-                f.write(res["token"])
-        elif res["status"] == "error":
-            return "invalid credentials"
-        elif res["status"] == "disabled":
-            return "account disabled"
-    else:
-        verify_url = "https://tombenax.pythonanywhere.com/verify"
+    if res["status"] == "valid":
+        return res["token"]
+    elif res["status"] == "error":
+        return "invalid credentials"
+    elif res["status"] == "disabled":
+        return "account disabled"
 
-        with open("token.txt", "r") as f:
-            r = requests.post(verify_url, data={"token": f.read().strip(), "username":username})
-        res = r.json()
-
-        if res["status"] == "invalid":
-            return "invalid credentials"
-        elif res["status"] == "disabled":
-            return "account disabled"
-    
-    return res["token"]
-
-
+@cache
 def closest_range(start:int, stop:int, step:int=1) -> list[int]:
     final_range = []
     middle = int((stop+start)/2)
@@ -150,6 +185,7 @@ def closest_range(start:int, stop:int, step:int=1) -> list[int]:
     
     return final_range
 
+@cache
 def square_range(center, layers: int, step: int = 1) -> list[list[int]]:
     cx, _, cy = center
     result = []
@@ -165,123 +201,309 @@ def square_range(center, layers: int, step: int = 1) -> list[list[int]]:
 
     return result
 
-def load_obj_mesh(file_path):
-    vertices = []
-    uvs = []
-    normals = []
-    faces = []
+@cache
+def export_and_load_chunk(models:list[list[int | float]], _layers_, CUBE_MODEL_INFO, TEXTURES_X, TEXTURES_Y):
+    """
+    Fast chunk mesh builder.
 
-    with open(file_path, "r") as f:
-        for line in f:
+    This version keeps the same cube vertex/index layout, but it avoids all
+    per-block OBJ string generation and re-parsing. It performs the merge in
+    NumPy so the chunk export stays cheap even when a lot of blocks need to be
+    packed into one mesh.
+    """
 
-            if line.startswith("v "):
-                _, x, y, z = line.split()
-                vertices.append((float(x), float(y), float(z)))
+    if not models:
+        return np.zeros((0, 8), dtype='f4'), np.zeros((0,), dtype='i4')
 
-            elif line.startswith("vt "):
-                _, u, v = line.split()
-                uvs.append((float(u), float(v)))
+    positions = np.asarray(models, dtype=np.float32)
+    layers = np.asarray(_layers_, dtype=np.int32)
 
-            elif line.startswith("vn "):
-                _, x, y, z = line.split()
-                normals.append((float(x), float(y), float(z)))
+    if positions.ndim == 1:
+        positions = positions.reshape(1, 3)
 
-            elif line.startswith("f "):
-                face = []
-                for p in line.split()[1:]:
-                    v, vt, vn = p.split("/")
-                    face.append((
-                        int(v) - 1,
-                        int(vt) - 1,
-                        int(vn) - 1
-                    ))
-                faces.append(face)
+    base_vertices = CUBE_MODEL_INFO[0].reshape(-1, 8).astype(np.float32)
+    base_indices = CUBE_MODEL_INFO[1].astype(np.int32)
 
-    return (
-        np.array(vertices, dtype=np.float32),
-        np.array(uvs, dtype=np.float32),
-        np.array(normals, dtype=np.float32),
-        faces
+    block_count = len(positions)
+
+    translated = np.repeat(base_vertices[None, :, :], block_count, axis=0)
+    translated[:, :, 0] += positions[:, 0][:, None]
+    translated[:, :, 1] += positions[:, 1][:, None]
+    translated[:, :, 2] += positions[:, 2][:, None]
+
+    uvs = translated[:, :, 6:8].copy()
+    atlas_u = uvs[:, :, 0]
+    atlas_v = uvs[:, :, 1]
+
+    bx = layers % TEXTURES_X
+    by = TEXTURES_Y - 1 - (layers // TEXTURES_X)
+
+    # for idx in range(TEXTURES_Y):
+        # by[np.where(by == (TEXTURES_Y - idx))] = idx
+
+    temp_by = by.copy()
+
+    by[np.where(temp_by == 3)] = 0
+    by[np.where(temp_by == 2)] = 1
+    by[np.where(temp_by == 1)] = 2
+    by[np.where(temp_by == 0)] = 3
+
+
+    atlas_u = atlas_u / TEXTURES_X + (bx[:, None] / TEXTURES_X)
+    atlas_v = atlas_v / TEXTURES_Y + (by[:, None] / TEXTURES_Y)
+
+    translated[:, :, 6] = atlas_u
+    translated[:, :, 7] = atlas_v
+
+    merged_vertices = translated.reshape(-1, 8)
+
+    vertex_offsets = np.arange(block_count, dtype=np.int32) * len(base_vertices)
+    merged_indices = np.repeat(base_indices[None, :], block_count, axis=0) + vertex_offsets[:, None]
+    merged_indices = merged_indices.reshape(-1)
+
+    return merged_vertices.astype('f4'), merged_indices.astype('i4')
+
+
+from allBlocks import *
+from colorama import Fore, Style
+
+
+@cache
+def get_block(name:str, position:list[float | int]):
+    match name:
+        case "grass":
+            return Grass(position)
+
+        case "dirt":
+            return Dirt(position)
+
+        case "stone":
+            return Stone(position)
+
+        case "birch_leave":
+            return Birch_Leave(position)
+
+        case "birch_log":
+            return Birch_Log(position)
+
+        case "oak_leave":
+            return Oak_Leave(position)
+
+        case "oak_log":
+            return Oak_Log(position)
+
+        case "sand":
+            return Sand(position)
+
+        case "water":
+            return Water(position)
+
+        case "cobblestone":
+            return Cobblestone(position)
+
+        case "oak_planks":
+            return Oak_Planks(position)
+
+    print(Fore.YELLOW + f"Unrecognized block: {name}")
+    print(Style.RESET_ALL)
+
+    return Block(name, position, name, {0:place, 1:destroy}, True)
+
+@cache
+def sum_list(list1, list2):
+    return [x+y for x, y in zip(list1, list2)]
+
+@cache
+def min_list(list1, list2):
+    return [x-y for x, y in zip(list1, list2)]
+
+import hashlib
+
+@cache
+def string_to_fixed_number(s, digits=10):
+    # Create a hash (SHA-256 is common and stable)
+    h = hashlib.sha256(s.encode()).hexdigest()
+    
+    # Convert hex string to integer
+    num = int(h, 16)
+    
+    # Limit to a fixed number of digits
+    return num % (10 ** digits)
+
+
+import base64
+import getpass
+import json
+import os
+
+from argon2.low_level import hash_secret_raw, Type
+from cryptography.fernet import Fernet
+
+
+FILE = "account.dat"
+
+
+def derive_key(master_password, salt):
+    key = hash_secret_raw(
+        secret=master_password.encode(),
+        salt=salt,
+        time_cost=3,
+        memory_cost=65536,
+        parallelism=4,
+        hash_len=32,
+        type=Type.ID,
     )
 
-def bake_instanced_obj(
-    obj_path,
-    instanced_model,
-    get_uv,
-    atlas_blocks
-):
-
-    base_v, base_uv, base_n, base_f = load_obj_mesh(obj_path)
-
-    out_vertices = []
-    out_indices = []
-
-    vertex_offset = 0
-
-    for i, mat in enumerate(instanced_model.models):
-
-        if not instanced_model.active[i]:
-            continue
-
-        block_id = instanced_model.layers[i]
-
-        for face in base_f:
-
-            face_verts = []
-
-            for v_idx, vt_idx, vn_idx in face:
-
-                v = base_v[v_idx]
-
-                vec = np.array([v[0], v[1], v[2], 1.0], dtype=np.float32)
-                t = vec @ mat
-
-                u, v_uv = base_uv[vt_idx]
-                u, v_uv = get_uv(u, v_uv, block_id, atlas_blocks)
-
-                face_verts.append([
-                    t[0], t[1], t[2],
-                    base_n[vn_idx][0],
-                    base_n[vn_idx][1],
-                    base_n[vn_idx][2],
-                    u, v_uv
-                ])
-
-            # triangle 1
-            out_vertices.extend([
-                face_verts[0],
-                face_verts[1],
-                face_verts[2],
-            ])
-
-            # triangle 2
-            out_vertices.extend([
-                face_verts[0],
-                face_verts[2],
-                face_verts[3],
-            ])
-
-            out_indices.extend([
-                vertex_offset,
-                vertex_offset + 1,
-                vertex_offset + 2,
-                vertex_offset + 3,
-                vertex_offset + 4,
-                vertex_offset + 5,
-            ])
-
-            vertex_offset += 6
-
-    vertices = np.array(out_vertices, dtype=np.float32).ravel()
-    indices = np.array(out_indices, dtype=np.uint32)
-
-    return vertices, indices
+    return base64.urlsafe_b64encode(key)
 
 
-def find_distance_between_squares_2D(now_square_position:list[int], square_destination:list[int]):
-    return hypot(square_destination[0] - now_square_position[0], square_destination[1] - now_square_position[1])
+def create_account(username, password, master):
+    # Random salt for Argon2id
+    salt = os.urandom(16)
+
+    # Derive encryption key from master password
+    key = derive_key(master, salt)
+
+    cipher = Fernet(key)
+
+    data = {
+        "username": username,
+        "password": password
+    }
+
+    # Encrypt the username and password
+    encrypted = cipher.encrypt(
+        json.dumps(data).encode()
+    )
+
+    # Store salt + encrypted data
+    vault = {
+        "salt": base64.b64encode(salt).decode(),
+        "data": encrypted.decode()
+    }
+
+    with open(FILE, "w") as f:
+        json.dump(vault, f)
+
+
+def load_account(master):
+    with open(FILE, "r") as f:
+        vault = json.load(f)
+
+    salt = base64.b64decode(vault["salt"])
+    encrypted = vault["data"].encode()
+
+    key = derive_key(master, salt)
+    cipher = Fernet(key)
+
+    try:
+        decrypted = cipher.decrypt(encrypted)
+    except Exception:
+        print("Wrong master password or corrupted file.")
+        return
+
+    data = json.loads(decrypted.decode())
+
+    return data
+
+from Number import Number
+
+def distance(first:list[Number], second:list[Number]):
+    return hypot(first[0]-second[0], first[1]-second[1], first[2]-second[2])
+
+def get_accurate_block(pos:list[Number]) -> tuple[Number]:
+    return tuple([floor(axis + 0.5) for axis in pos])
+
+def raycast(occupied, start, front, max_iterations=10):
+
+    pos = start.copy()
+
+    last = start.copy()
+
+    for iteration in range(max_iterations):
+        pos += front
+
+        round_ = get_accurate_block(pos)
+
+        if round_ in occupied:
+            previous_block = get_accurate_block(last)
+            block_delta = np.asarray(round_) - np.asarray(previous_block)
+
+            if not np.any(block_delta):
+                axis = int(np.argmax(np.abs(front)))
+                normal = np.zeros(3, dtype=int)
+                normal[axis] = -1 if front[axis] > 0 else 1
+            else:
+                normal = np.zeros(3, dtype=int)
+                axis = int(np.argmax(np.abs(block_delta)))
+                normal[axis] = -1 if block_delta[axis] > 0 else 1
+
+            return np.array(round_), np.array(normal)
+
+        last = pos.copy()
+
+            
 
 
 if __name__ == "__main__":
     #put tests here
     pass
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#This software was made by teh owner of the gmail account of "Tombenax@gmail.com", any attempt of selling or distributing will result in legal actions.
+#If someone presents this software as they'rs just know that it's not
+#IF THIS COMMENT ARE MISSING OR MODIFY THE SOFTwARE HAS BEEN STOLEN

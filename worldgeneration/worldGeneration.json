@@ -1,0 +1,42 @@
+{
+    "all" : ["plains", "desert", "mountains"],
+    "plains": {
+        "topBlock" : "grass",
+        "bottomBlock" : "dirt",
+        "rules":{
+            "structures":
+            [
+                {"chance":3, "name":"oak_small_tree", "folder":"worldgeneration"},
+                {"chance":3, "name":"oak_medium_tree", "folder":"worldgeneration"},
+                {"chance":0.001, "name":"temple", "folder":"worldgeneration"}
+            ],
+            "water":{"level":3, "depth":5},
+            "terrain_height":5,
+            "generationFormula": "perlinNoise"
+        }
+    },
+    "desert": {
+        "topBlock" : "sand",
+        "bottomBlock" : "sand",
+        "rules":{
+            "structures":
+            [
+            ],
+            "water":{"level":1000000000, "depth":5},
+            "terrain_height":5,
+            "generationFormula" : "perlinFlat"
+        }
+    },
+    "mountains" : {
+        "topBlock" : "cobblestone",
+        "bottomBlock" : "stone",
+        "rules":{
+            "structures":
+            [
+            ],
+            "water":{"level":1000000000, "depth":5},
+            "terrain_height":5,
+            "generationFormula" : "cone"
+        }
+    }
+}

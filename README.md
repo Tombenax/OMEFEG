@@ -43,6 +43,7 @@ DOWNLOAD
 Download the exe file from Github or go to: tombenax.pythonanywhere.com
 
 NERDS STUFF
+<<<<<<< HEAD
 Modding is supported!!
 Clone the file called OMEFEGINTERFACER.py in your mod directory and import it in your file, than you can call various functions to control the game
 
@@ -53,3 +54,51 @@ Hi, i'm 12 y.o., so please don't steal my game, i still have parents that can su
 
 Hope you enjoy playing!!
 Rate the game from 0 to 5 and give me feedback!!
+=======
+Modding is supported!! (read note)
+
+Hope you enjoy playing!!
+Rate the game from 0 to 5 and give me feedback!!
+.
+.
+.
+.
+.
+.
+.
+.
+.
+.
+.
+.
+.
+.
+.
+.
+.
+.
+.
+.
+.
+.
+.
+.
+.
+.
+.
+.
+.
+.
+.
+.
+.
+.
+.
+.
+.
+.
+.
+.
+.
+note: Actually, i change my mind, it's not supported
+>>>>>>> b6f980dda9935459d22483ac70b9759755bcef26

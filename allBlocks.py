@@ -1,5 +1,4 @@
 from Block import Block
-from proprieties_functions import *
 
 def sum_list(list1, list2):
     return [x+y for x, y in zip(list1, list2)]
@@ -21,7 +20,7 @@ WATER_1 = 10
 
 class Grass(Block):
     def __init__(self, position: list[float | int]):
-        super().__init__("grass", position, GRASS, {0 : place, 1 : destroy}, True)
+        super().__init__("grass", position, GRASS, {0:None}, True)
 
     def update(self, neighbours:dict[tuple, Block]):
         pass
@@ -31,7 +30,7 @@ class Grass(Block):
 
 class Dirt(Block):
     def __init__(self, position: list[float | int]):
-        super().__init__("dirt", position, DIRT, {0 : place, 1 : destroy}, True)
+        super().__init__("dirt", position, DIRT, {0:None}, True)
 
     def update(self, neighbours:dict[tuple, Block]):
         pass
@@ -41,7 +40,7 @@ class Dirt(Block):
 
 class Stone(Block):
     def __init__(self, position: list[float | int]):
-        super().__init__("stone", position, STONE, {0 : place, 1 : destroy}, True)
+        super().__init__("stone", position, STONE, {0:None}, True)
 
     def update(self, neighbours:dict[tuple, Block]):
         pass
@@ -51,7 +50,7 @@ class Stone(Block):
 
 class Birch_Leave(Block):
     def __init__(self, position: list[float | int]):
-        super().__init__("birch_leave", position, BIRCH_LEAVE, {0 : place, 1 : destroy}, True)
+        super().__init__("birch_leave", position, BIRCH_LEAVE, {0:None}, True)
 
     def update(self, neighbours:dict[tuple, Block]):
         pass
@@ -61,7 +60,7 @@ class Birch_Leave(Block):
 
 class Birch_Log(Block):
     def __init__(self, position: list[float | int]):
-        super().__init__("birch_log", position, BIRCH_LOG, {0 : place, 1 : destroy}, True)
+        super().__init__("birch_log", position, BIRCH_LOG, {0:None}, True)
 
     def update(self, neighbours:dict[tuple, Block]):
         pass
@@ -71,7 +70,7 @@ class Birch_Log(Block):
 
 class Oak_Leave(Block):
     def __init__(self, position: list[float | int]):
-        super().__init__("oak_leave", position, OAK_LEAVE, {0 : place, 1 : destroy}, True)
+        super().__init__("oak_leave", position, OAK_LEAVE, {0:None}, True)
 
     def update(self, neighbours:dict[tuple, Block]):
         pass
@@ -81,7 +80,7 @@ class Oak_Leave(Block):
 
 class Oak_Log(Block):
     def __init__(self, position: list[float | int]):
-        super().__init__("oak_log", position, OAK_LOG, {0 : place, 1 : destroy}, True)
+        super().__init__("oak_log", position, OAK_LOG, {0:None}, True)
 
     def update(self, neighbours:dict[tuple, Block]):
         pass
@@ -91,7 +90,7 @@ class Oak_Log(Block):
 
 class Oak_Planks(Block):
     def __init__(self, position: list[float | int]):
-        super().__init__("oak_planks", position, OAK_PLANKS, {0 : place, 1 : destroy}, True)
+        super().__init__("oak_planks", position, OAK_PLANKS, {0:None}, True)
 
     def update(self, neighbours:dict[tuple, Block]):
         pass
@@ -101,7 +100,7 @@ class Oak_Planks(Block):
 
 class Sand(Block):
     def __init__(self, position: list[float | int]):
-        super().__init__("sand", position, SAND, {0 : place, 1 : destroy}, True)
+        super().__init__("sand", position, SAND, {0:None}, True)
 
     def update(self, neighbours:dict[tuple, Block]):
         pass
@@ -113,7 +112,7 @@ MAX_WATER_LENGHT = 5
 
 class Water(Block):
     def __init__(self, position: list[float | int], source:bool=True, lenght:int=MAX_WATER_LENGHT):
-        super().__init__("water", position, WATER_1, {0 : place, 1 : destroy}, False)
+        super().__init__("water", position, WATER_1, {0:None}, False)
         self.source = source
         self.lenght = lenght
         self.chunk_pos = (self.position[0]//10*10, 0, self.position[2]//10*10)
@@ -143,7 +142,7 @@ class Water(Block):
 
 class Cobblestone(Block):
     def __init__(self, position: list[float | int]):
-        super().__init__("cobblestone", position, COBBLESTONE, {0 : place, 1 : destroy}, True)
+        super().__init__("cobblestone", position, COBBLESTONE, {0:None}, True)
 
     def update(self, neighbours:dict[tuple, Block]):
         pass

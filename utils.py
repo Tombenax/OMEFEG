@@ -25,8 +25,6 @@ def generate_tree(x:int, y:int, z:int, type:str, folder:str):
 
 from math import floor, hypot
 from Block import Block
-from proprieties_functions import *
-from Vectors import *
 
 def select(x, z, N, height_map):
     y = height_map(x//10+0.1, z//10+0.1)-0.02
@@ -149,8 +147,8 @@ notifier.app_name = "Game"
 async def main(title, message):
     await notifier.send(title, message)
 
-def notification(message):
-    asyncio.run(main("Game Ban Notification", message))
+def notification(title, message):
+    asyncio.run(main(title, message))
 
 import requests
 
@@ -200,6 +198,8 @@ def square_range(center, layers: int, step: int = 1) -> list[list[int]]:
                     ])
 
     return result
+
+import numpy as np
 
 @cache
 def export_and_load_chunk(models:list[list[int | float]], _layers_, CUBE_MODEL_INFO, TEXTURES_X, TEXTURES_Y):

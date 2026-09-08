@@ -1,104 +1,67 @@
 # OMEFEG
-This game is a cubic-style sandbox
+This is my game OMEFEG (it's an achronhym, i'm not gonna reveale it)
 
-LICENSE
-This repository has no "Licence" file, this means that i hold the copyrights, you cannot copy, modify or distribute the ode, to learn more click here:
-https://choosealicense.com/no-permission/
+(btw orry for my typing, but my keaboard is new and i'm getting used to it)
 
-CONTENT
-This is my game where you are a goofy player roaming around an infinite generating world at 30 FPS on a potato or at 120 on a decent PC (my computer is a potato so i dont know).
+#
 
-Minimum RAM: at least 0.00 MB
-GPU: at least a crappy integrated graphics, if it has OpenGL it's okay
-CPU: i don't think an Intel Pentium would work (prove me wrong if you want)
+### CONTENT
 
-MULTIPLAYER
+- go around using WASD
+- use your mouse to look around
+- press 'f' an WAS or D to fly around
+- space to jump
+- LMB place
+- RMB destroy
 
-Currently multiplayer features are:
+#
 
-- You can see other players
-- Goofy rotatiuons of the player when they look down
-- Insult each other in chat
-- Placing and Destroying blocks
+### MULTIPLAYER
 
-HOW TO START MULTIPLAYER
-Check the video called "How to multiplayer.mp4" in the server directory
+As of 08/09/2026 (DD/MM/YYYY) there is no server.exe, just serer.py.
 
-NORMAL FEATURES
+Install python from python.org (python 3.13)
+Open CMD or powershell and type 'pip install socket'
 
-- Saving world and builds (but not where you are when you save)
-- Placing and Destroying blocks
-- Existing
-- Walking sound
-- Sprinting
-- Jumping
+then, open 'main.py' not serr.py but main.py an run it by writing in CMD or powershell 'python main.py'
 
-KNOWWN BUGS
-None, they are all features ;)
+Once it starts, copy the IP of your computer, open Launcher.exe an in the Entry typ the IP of your computer followed by :44699.
 
-OBJECTIVE
-Do goofy stuff and have fun (actual objective coming in future versions)
+Click on the button tat says 'Turn Multiplayer ON' and then click on 'Launch OMEFEG'
 
-DOWNLOAD
-Download the exe file from Github or go to: tombenax.pythonanywhere.com
+if you did everythng wright you should connect to the server.
 
-NERDS STUFF
-<<<<<<< HEAD
-Modding is supported!!
-Clone the file called OMEFEGINTERFACER.py in your mod directory and import it in your file, than you can call various functions to control the game
+If you can't see any players that are connected then it's probably that the serer didn't start or that you typed something worng, so close OMEFEG an open the logs folder, open the lates log file and read the log, if there is no error then check the server terminal.
 
-!!WARNING!! Modding is relatevely new.
+More trubleshooting coming later.
 
-DEVELOPER NOTES
-Hi, i'm 12 y.o., so please don't steal my game, i still have parents that can sue you.
+#
 
-Hope you enjoy playing!!
-Rate the game from 0 to 5 and give me feedback!!
-=======
-Modding is supported!! (read note)
+### MODDING
+Modding is new, so it may be not fully supporte.
 
-Hope you enjoy playing!!
-Rate the game from 0 to 5 and give me feedback!!
-.
-.
-.
-.
-.
-.
-.
-.
-.
-.
-.
-.
-.
-.
-.
-.
-.
-.
-.
-.
-.
-.
-.
-.
-.
-.
-.
-.
-.
-.
-.
-.
-.
-.
-.
-.
-.
-.
-.
-.
-.
-note: Actually, i change my mind, it's not supported
->>>>>>> b6f980dda9935459d22483ac70b9759755bcef26
+Then make a Mod.py file and import OMOMEFEGINTERFACER, then use the function provided by te moule.
+
+here's a test mod that i made:
+mods/TestMod/Mod.py:
+import OMEFEGINTERFACER
+
+
+def init(global_variables):
+    OMEFEGINTERFACER.init_interfacer(global_variables)
+    OMEFEGINTERFACER.move_player(0, 50, 0)
+    OMEFEGINTERFACER.send_notification("TestMod", "=)=)=)=)=)=)=)=)=)=)=)=)=)=)=)=)=)=)=)=)")
+    OMEFEGINTERFACER.place("oak_log", 0, 10, 0)
+    OMEFEGINTERFACER.destroy(0, 0, 0)
+
+def update():
+    camera_pos = list(map(round, OMEFEGINTERFACER.get_camera().position.tolist()))
+    camera_pos[1] -= 1
+    OMEFEGINTERFACER.destroy(*camera_pos)
+
+this simple mod on init sends a notification, moves the player at y 50, places an oak log and destroyes a block, in update it removes the block below the player.
+
+as you can see moding is simple, if you want to get a game variable that is not get_camera you can use get_variable (btw if the variable does not exist the game errors)
+
+ATTENTION:
+the game uses the exec funtion to execute your mod code, bcause i didn't want to write a parser. so some mods can be malicious, only install mods by trusted sources (like me =))

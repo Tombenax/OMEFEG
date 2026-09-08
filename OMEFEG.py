@@ -1,3 +1,4 @@
+import importlib
 from itertools import cycle
 from math import radians
 
@@ -91,6 +92,20 @@ def generat_chunk_at(render, position:list[Number]):
 FOV = 60
 
 PROJECTION = np.array(Matrix44.perspective_projection(FOV, WIDTH/HEIGHT, 0.1, 1000), dtype='f4')
+
+mods_names = []
+
+def load_mods():
+    for mod in os.listdir("mods"):
+        print(f"Loading mod: {mod}")
+
+        exec("import mods.TestMod.Mod", globals())
+
+        mods_names.append(mod)
+
+
+
+
 
 def init_programs(render):
     render.blocks_program["atlasArray"] = 0
@@ -216,6 +231,11 @@ def init(render):
     hud.add_texts(["FPS: negative Infinity", "SELECTED BLOCK: water"], [[0, 0], [0, 30]], ["FPS", "sb"])
 
     glfw.set_cursor_pos_callback(render.window, CAMERA.cursor_move)
+
+    load_mods()
+
+    for name in mods_names:
+        exec(f"globals()['mods'].{name}.Mod.init(globals())", globals())
 
 def numpy_to_list(array):
     output = []
@@ -409,6 +429,9 @@ def update(render):
         process_multiplayer(PLAYERS, blocks_placed, blocks_broken)
 
     update_programs(render, view=CAMERA.view.astype("f4").tobytes(), lightPos=(9, 50, 9), viewPos=CAMERA.position.astype("f4").tobytes())
+
+    for name in mods_names:
+        exec(f"globals()['mods'].{name}.Mod.update()")
 
     WORLD.render_chunks(camera_chunk_pos, RENDER_DISTANCE)
 

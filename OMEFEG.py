@@ -99,7 +99,7 @@ def load_mods():
     for mod in os.listdir("mods"):
         print(f"Loading mod: {mod}")
 
-        exec("import mods.TestMod.Mod", globals())
+        exec(f"import mods.{mod}.Mod", globals())
 
         mods_names.append(mod)
 
@@ -168,6 +168,16 @@ def send_data_to_server(data, network: Network):
 
 max_x, min_x, max_y, min_y = 0, 0, 0, 0
 
+def resized(render, width, height):
+    global PROJECTION, WIDTH, HEIGHT
+
+    render.ctx.viewport = (0, 0, width, height)
+
+    WIDTH, HEIGHT = width, height
+
+    PROJECTION = np.array(Matrix44.perspective_projection(FOV, WIDTH/HEIGHT, 0.1, 1000), dtype='f4')
+    
+
 def init(render):
     global CAMERA, TEXT, coll, WORLD, RENDER_DISTANCE, NETWORK, PLAYERS, min_x, max_x, min_y, max_y, hud, SLECTED
 
@@ -232,15 +242,12 @@ def init(render):
 
     glfw.set_cursor_pos_callback(render.window, CAMERA.cursor_move)
 
+    glfw.set_window_size_callback(render.window, lambda x,y,z: resized(render,y,z))
+
     load_mods()
 
     for name in mods_names:
-        exec(f"globals()['mods'].{name}.Mod.init(globals())", globals())
-
-def numpy_to_list(array):
-    output = []
-    output.extend(array)
-    return output
+        exec(f"globals()['mods'].{name}.Mod.init(globals(), locals())", globals(), locals())
 
 def update_programs(render, **kwargs):
     render.blocks_program["view"].write(kwargs["view"])
@@ -370,11 +377,25 @@ selected_block = next(generator)
 pressed = False
 cooldown = Cooldown(0.2)
 cooldown2 = Cooldown(0.2)
+cooldown3 = Cooldown(0.2)
+
+pause = False
 
 blocks_placed, blocks_broken = [], []
 
 def update(render):
-    global CAMERA, coll, min_x, max_x, min_y, max_y, PLAYERS, playerdata, source, hud, frames_passed, start_second, SLECTED, selected_block, pressed,blocks_placed, blocks_broken
+    global CAMERA, coll, min_x, max_x, min_y, max_y, PLAYERS, playerdata, source, hud, frames_passed, start_second, SLECTED, selected_block, pressed,blocks_placed, blocks_broken, pause
+
+    if glfw.get_key(render.window, glfw.KEY_ESCAPE) == glfw.PRESS and cooldown3.is_active:
+        pause = not pause
+        if pause == True:
+            glfw.set_input_mode(render.window,glfw.CURSOR,glfw.CURSOR_NORMAL)
+            source.stop()
+        else:
+            glfw.set_input_mode(render.window,glfw.CURSOR,glfw.CURSOR_DISABLED)
+
+    if pause:
+        return
 
     #play EPIC music
     if source is None or not source.get_state() == openal.AL_PLAYING:
@@ -382,7 +403,7 @@ def update(render):
 
     render.ctx.clear(0, 0, 0)
 
-    listed_camera = numpy_to_list(CAMERA.position)
+    listed_camera = CAMERA.position.tolist()
     inted_camera = list(map(int, listed_camera))
     camera_chunk_pos = [inted_camera[0]//10*10, 0, inted_camera[2]//10*10]
 
@@ -431,7 +452,7 @@ def update(render):
     update_programs(render, view=CAMERA.view.astype("f4").tobytes(), lightPos=(9, 50, 9), viewPos=CAMERA.position.astype("f4").tobytes())
 
     for name in mods_names:
-        exec(f"globals()['mods'].{name}.Mod.update()")
+        exec(f"globals()['mods'].{name}.Mod.update(globals(), locals())", globals(), locals())
 
     WORLD.render_chunks(camera_chunk_pos, RENDER_DISTANCE)
 

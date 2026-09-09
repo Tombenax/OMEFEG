@@ -1,5 +1,5 @@
 {
-    "all" : ["plains", "desert", "mountains"],
+    "all" : ["desert", "plains", "mountains"],
     "plains": {
         "topBlock" : "grass",
         "bottomBlock" : "dirt",

@@ -26,18 +26,9 @@ def generate_tree(x:int, y:int, z:int, type:str, folder:str):
 from math import floor, hypot
 from Block import Block
 
-def select(x, z, N, height_map):
-    y = height_map(x//10+0.1, z//10+0.1)-0.02
-    last = 0
-    th = 1/N
-    for idx in range(1, N+1):
-        if last >= y < th * idx:
-            return idx-1
-        last = th * idx
-
 
 @cache
-def generate_terrain(size=10, height_map=None, offsett=[0, 0, 0], rules_:dict[str, int | list[int] | str]={}, random_seed:random.Random=random.Random(random.randint(0, 9_223_372_036_854_775_807)), biomes=True, sin_world=False) -> list[Block]:
+def generate_terrain(size=10, height_map=None, biomes_map=None, offsett=[0, 0, 0], rules_:dict[str, int | list[int] | str]={}, random_seed:random.Random=random.Random(random.randint(0, 9_223_372_036_854_775_807)), biomes=True, sin_world=False) -> list[Block]:
     """
     Generates terrain as a list of [x, y, z] block positions.
     height_map: optional function f(x, z) -> y
@@ -47,7 +38,7 @@ def generate_terrain(size=10, height_map=None, offsett=[0, 0, 0], rules_:dict[st
     trees = []
     can_generate = True
     if biomes:
-        bom = rules_["all"][select(offsett[0], offsett[2], len(rules_["all"]), height_map)]
+        bom = rules_["all"][biomes_map[offsett[0], offsett[2]]]
         rules = rules_[bom]["rules"]
         vegetation = rules_[bom]
     else:

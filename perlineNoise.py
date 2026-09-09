@@ -10,16 +10,57 @@ class PerlinNoiseFactory:
         return self.perlin((x, y))
 
 if __name__ == "__main__":
-    max_b = -float("inf")
-    min_b = float("inf")
-    pn = PerlinNoiseFactory(123456789, 1)
+    def generate_heightmap(noise, width, depth, N, scale=10):
+        # Generate all noise values
+        values = []
+        for x in range(width):
+            for z in range(depth):
+                values.append(noise([x / scale, z / scale]))
+
+        # Sort values to find percentile thresholds
+        sorted_values = sorted(values)
+
+        # Calculate thresholds
+        thresholds = [
+            sorted_values[int(len(sorted_values) * i / N)]
+            for i in range(1, N)
+        ]
+
+        # Convert noise values to discrete heights
+        heightmap = []
+
+        for x in range(width):
+            row = []
+
+            for z in range(depth):
+                value = noise([x / scale, z / scale])
+
+                height = 0
+                while height < len(thresholds) and value >= thresholds[height]:
+                    height += 1
+
+                row.append(height)
+
+            heightmap.append(row)
+
+        return heightmap
+
+    from perlin_noise import PerlinNoise
+
+    noise = PerlinNoise(octaves=3)
+
+    heightmap = generate_heightmap(
+        noise,
+        width=100,
+        depth=100,
+        N=3,
+        scale=20
+    )
+
     for x in range(1000):
         for y in range(1000):
-            r = pn(x/10, y/10)
-            if r < min_b:
-                min_b = r
+            print(heightmap[x][y])
 
-            if r > max_b:
-                max_b = r
 
-    print(f"max: {max_b}, min: {min_b}")
+
+

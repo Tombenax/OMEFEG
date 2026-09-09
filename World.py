@@ -7,6 +7,104 @@ from Number import Number
 from utils import export_and_load_chunk, square_range
 from Render import *
 
+class HeightMap:
+    def __init__(self, noise, width, depth, N, scale=10):
+        self.noise = noise
+        self.width = width
+        self.depth = depth
+        self.N = N
+        self.scale = scale
+
+        self._values = {}
+        self._thresholds = []
+
+        self._generate_initial()
+
+    def _noise(self, x, z):
+        """Get and cache a noise value."""
+        key = (x, z)
+
+        if key not in self._values:
+            self._values[key] = self.noise(
+                (x / self.scale) + 0.1,
+                (z / self.scale) + 0.1
+            )
+
+        return self._values[key]
+
+    def _generate_initial(self):
+        """Generate the initial area."""
+        for x in range(self.width):
+            for z in range(self.depth):
+                self._noise(x, z)
+
+        self._calculate_thresholds()
+
+    def _calculate_thresholds(self):
+        """Recalculate percentile thresholds."""
+        values = sorted(self._values.values())
+
+        if not values:
+            self._thresholds = []
+            return
+
+        self._thresholds = [
+            values[int(len(values) * i / self.N)]
+            for i in range(1, self.N)
+        ]
+
+    def _get_height(self, x, z):
+        """Convert a noise value into a discrete height."""
+        value = self._noise(x, z)
+
+        height = 0
+
+        while (
+            height < len(self._thresholds)
+            and value >= self._thresholds[height]
+        ):
+            height += 1
+
+        return height
+
+    def _expand(self, x, z):
+        """Generate enough data to include x, z."""
+        old_width = self.width
+        old_depth = self.depth
+
+        self.width = max(self.width, x + 1)
+        self.depth = max(self.depth, z + 1)
+
+        # Generate newly required values
+        for new_x in range(old_width, self.width):
+            for new_z in range(self.depth):
+                self._noise(new_x, new_z)
+
+        for new_z in range(old_depth, self.depth):
+            for new_x in range(old_width):
+                self._noise(new_x, new_z)
+
+        self._calculate_thresholds()
+
+    def __getitem__(self, position):
+        """
+        Get height using:
+
+            heightmap[x, z]
+
+        Automatically expands the heightmap if necessary.
+        """
+        x, z = position
+
+        if x < 0 or z < 0:
+            x = abs(x)
+            z = abs(z)
+
+        if x >= self.width or z >= self.depth:
+            self._expand(x, z)
+
+        return self._get_height(x, z)
+
 class World:
     def __init__(self, render, seed, heightmap, rules, **kwargs):
         self.render = render
@@ -14,11 +112,12 @@ class World:
         self.heightmap = heightmap
         self.rules = rules
         self.kwargs = kwargs
+        self.biomes_map = HeightMap(heightmap, 10, 10, 3, 10)
 
         self.chunks:ChunksList = ChunksList()
 
     def generate_chunk_at(self, position:list[Number]):
-        chunk = Chunk(self.render, position, self.seed, self.heightmap, self.rules, **self.kwargs)
+        chunk = Chunk(self.render, position, self.seed, self.heightmap, self.biomes_map, self.rules, **self.kwargs)
         self.chunks.add(chunk)
 
     def get_y_at(self, x:Number, z:Number) -> Number:

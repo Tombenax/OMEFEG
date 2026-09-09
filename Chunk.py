@@ -10,14 +10,14 @@ from Number import Number
 from typing import Callable, Any
 
 class Chunk:
-    def __init__(self, render, position:list[Number], seed:Random, heightmap:Callable, rules:dict[Any, Any], **kwargs):
+    def __init__(self, render, position:list[Number], seed:Random, heightmap:Callable, biomes_map:Callable, rules:dict[Any, Any], **kwargs):
         self.blocks = BlocksList()
 
         self.position = position
 
         self.render = render
 
-        terrain = generate_terrain(height_map=heightmap, offsett=position, rules_=rules, random_seed=seed, sin_world=True if kwargs.get("sin_world") else False, biomes=True if kwargs.get("biomes") else False)
+        terrain = generate_terrain(height_map=heightmap, biomes_map=biomes_map, offsett=position, rules_=rules, random_seed=seed, sin_world=True if kwargs.get("sin_world") else False, biomes=True if kwargs.get("biomes") else False)
 
         self.blocks.extend(terrain)
 

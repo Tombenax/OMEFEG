@@ -1,10 +1,7 @@
-import importlib
 from itertools import cycle
-from math import radians
-
 from Cooldown import Cooldown
 from Render import *
-from Chunk import Chunk
+from Chunk import Chunk       
 from Block import Block
 from World import World
 from allBlocks import *

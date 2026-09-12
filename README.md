@@ -65,3 +65,10 @@ as you can see moding is simple, if you want to get a game variable that is not 
 
 ATTENTION:
 the game uses the exec funtion to execute your mod code, bcause i didn't want to write a parser. so some mods can be malicious, only install mods by trusted sources (like me =))
+
+#
+### DEVELOPER STUFF
+So, for who downloads th code and runs it (including me) here's how to run 2 versions:
+- Desktop: run it on your pc by doing (in powershell) $env:OMEFEG_DESKTOP = '1' and then python OMEFEG.py
+
+- Mobile: in powershell run $env:OMEFEG_DESKTOP = '0' and then python OMEFEG.py

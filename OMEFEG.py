@@ -1,6 +1,20 @@
+import datetime
 from itertools import cycle
 from Cooldown import Cooldown
-from Render import *
+import os
+import sys
+
+# True on PC, False on Android phones. Override with OMEFEG_DESKTOP=0/1.
+DESKTOP = os.environ.get("OMEFEG_DESKTOP")
+if DESKTOP is None:
+    DESKTOP = not hasattr(sys, "getandroidapilevel")
+else:
+    DESKTOP = DESKTOP == "1"
+
+if DESKTOP:
+    from Render import *
+else:
+    from MobileRender import *
 from Chunk import Chunk       
 from Block import Block
 from World import World
@@ -11,10 +25,12 @@ from utils import *
 from network import Network
 import threading
 import argparse
+import struct
 
 argParser = argparse.ArgumentParser()
 argParser.add_argument("--multiplayer")
 argParser.add_argument("--not_move_window")
+argParser.add_argument("--load_world")
 
 parsedArgs = argParser.parse_args()
 
@@ -26,8 +42,7 @@ if MULTIPLAYER:
 
 MOVE_WINDOW = not parsedArgs.not_move_window
 
-
-CAMERA:Camera = None
+LOAD_WORLD = parsedArgs.load_world
 
 
 class sin:
@@ -44,7 +59,7 @@ class Flat:
     def __call__(self, x, y) -> float:
         return 0.0
             
-seed = string_to_fixed_number(str(0), 256)
+seed = string_to_fixed_number(str(0), 10)
 random_seed = Random(seed)
 
 FLAT = False
@@ -75,20 +90,25 @@ else:
 with open("worldgeneration/worldGeneration.json", "r") as f:
     rules = json.load(f)
 
-def generat_chunk_at(render, position:list[Number]):
-    global max_x, min_x, max_y, min_y
+def convert_to_blocks(data):
+    blocks = []
+    idx = 0
+    while idx < len(data):
+        x = int.from_bytes(data[idx:idx+8], signed=True)
+        idx += 8
 
-    max_x = max(max_x, position[0]+10)
-    min_x = min(min_x, position[0])
-    max_y = max(max_y, position[2]+10)
-    min_y = min(min_y, position[2])
+        y = int.from_bytes(data[idx:idx+8], signed=True)
+        idx += 8
 
-    return Chunk(render, position, random_seed, heightmap, rules, sin_world=sin_world, biomes = not FLAT)
+        z = int.from_bytes(data[idx:idx+8], signed=True)
+        idx += 8
 
+        t = int.from_bytes(data[idx:idx+1])
+        idx += 1
 
-FOV = 60
+        blocks.append(get_texture(t, x, y, z))
 
-PROJECTION = np.array(Matrix44.perspective_projection(FOV, WIDTH/HEIGHT, 0.1, 1000), dtype='f4')
+    return blocks
 
 mods_names = []
 
@@ -100,50 +120,8 @@ def load_mods():
 
         mods_names.append(mod)
 
-
-
-
-
-def init_programs(render):
-    render.blocks_program["atlasArray"] = 0
-    render.blocks_program["projection"].write(PROJECTION)
-    render.blocks_program["frame"] = 0
-    render.blocks_program["chance"] = -1
-    render.blocks_program["TEXTURE_W"] = TEXTURE_W
-    render.blocks_program["TEXTURE_H"] = TEXTURE_H
-    render.blocks_program["ATLAS_W"] = ATLAS_W
-    render.blocks_program["ATLAS_H"] = ATLAS_H
-
-    render.text_program["atlasArray"] = 1
-    render.text_program["projection"].write(PROJECTION)
-    render.text_program["frame"] = 0
-    render.text_program["chance"] = -1
-    render.text_program["TEXTURE_W"] = CHR_W
-    render.text_program["TEXTURE_H"] = CHR_H
-    render.text_program["ATLAS_W"] = CHAR_W
-    render.text_program["ATLAS_H"] = CHAR_H
-
-    render.item_program["atlasArray"] = 2
-    render.item_program["projection"].write(PROJECTION)
-    render.item_program["frame"] = 0
-    render.item_program["chance"] = -1
-    render.item_program["TEXTURE_W"] = ITEM_W
-    render.item_program["TEXTURE_H"] = ITEM_H
-    render.item_program["ATLAS_W"] = ITEMS_W
-    render.item_program["ATLAS_H"] = ITEMS_H
-
-    render.chunk_program["atlasArray"] = 0
-    render.chunk_program["projection"].write(PROJECTION)
-
-    render.HUDText_program["atlasArray"] = 1
-    render.HUDText_program["screenSize"].value = (WIDTH, HEIGHT)
-    render.HUDText_program["TEXTURE_W"] = CHR_W
-    render.HUDText_program["TEXTURE_H"] = CHR_H
-    render.HUDText_program["ATLAS_W"] = CHAR_W
-    render.HUDText_program["ATLAS_H"] = CHAR_H
-
-def colletced():
-    CAMERA.max_jumps += 1
+def colletced(render):
+    render.CAMERA.max_jumps += 1
     pos = None
     while pos is None:
         x, z = random.randrange(min_x, max_x), random.randrange(min_y, max_y)
@@ -165,36 +143,52 @@ def send_data_to_server(data, network: Network):
 
 max_x, min_x, max_y, min_y = 0, 0, 0, 0
 
-def resized(render, width, height):
-    global PROJECTION, WIDTH, HEIGHT
-
-    render.ctx.viewport = (0, 0, width, height)
-
-    WIDTH, HEIGHT = width, height
-
-    PROJECTION = np.array(Matrix44.perspective_projection(FOV, WIDTH/HEIGHT, 0.1, 1000), dtype='f4')
-    
+def load_player(data):
+    return list(struct.unpack(">ddd", data[:24]))
 
 def init(render):
-    global CAMERA, TEXT, coll, WORLD, RENDER_DISTANCE, NETWORK, PLAYERS, min_x, max_x, min_y, max_y, hud, SLECTED
-
-    init_programs(render)
-
-    CAMERA = Camera([0, 2, 0], render)
+    global TEXT, coll, WORLD, RENDER_DISTANCE, NETWORK, PLAYERS, min_x, max_x, min_y, max_y, hud, SLECTED
 
     WORLD = World(render, random_seed, heightmap, rules, sin_world=sin_world, biomes = not FLAT)
 
     RENDER_DISTANCE = 3
 
-    for x, z in square_range([0, 0, 0], RENDER_DISTANCE, 10):
-        if not [x, 0, z] in WORLD.chunks.positions:
-            WORLD.generate_chunk_at([x, 0, z])
-            min_x = min(min_x, x)
-            max_x = max(max_x, x)
-            min_y = min(min_y, x)
-            max_y = max(max_y, x)
+    if  LOAD_WORLD:
+        render.CAMERA.position = np.array(open_save_file("player.bin", load_player), dtype="f4")
 
-    TEXT = InstancedText(ctx=render.ctx, program=render.text_program, charset=CHARSET)
+        world = open_save_file("world.bin", convert_to_blocks)
+
+        if world:
+            grouped = {}
+            for block in world:
+                chunk_pos = (block.position[0]//10*10, 0, block.position[2]//10*10)
+                grouped.setdefault(chunk_pos, []).append(block)
+
+            for chunk_pos, blocks in grouped.items():
+                chunk = WORLD.get_chunk_at(list(chunk_pos), empty=True)
+                chunk.blocks.clear()
+                for block in blocks:
+                    chunk.blocks.add(block)
+                chunk._update_blocks()
+                chunk._update_dummy()
+
+        else:
+            notification("World Not Found", "Your worl file was not found, if the file 'world.bin' is in %appdata%/OMEFEG then idk what the heck is happening, else just make a world")
+
+            render.set_window_should_close(True)
+
+            return
+        
+    else:
+        for x, z in square_range([0, 0, 0], RENDER_DISTANCE, 10):
+            if not [x, 0, z] in WORLD.chunks.positions:
+                WORLD.generate_chunk_at([x, 0, z])
+                min_x = min(min_x, x)
+                max_x = max(max_x, x)
+                min_y = min(min_y, x)
+                max_y = max(max_y, x)
+
+    TEXT = InstancedText(render=render, charset=CHARSET)
 
     higher = -float("inf")
 
@@ -215,14 +209,14 @@ def init(render):
 
         PLAYERS = Model(render)
         v, i = load_obj("assets/models/player.obj")
-        PLAYERS.add_model("player", program=render.blocks_program, vertices=v, indices=i)
+        PLAYERS.add_model("player", vertices=v, indices=i)
 
     SLECTED = Model(render)
     v, i = load_obj("assets/models/block.obj")
-    SLECTED.add_model("selected", program=render.blocks_program, vertices=v, indices=i)
+    SLECTED.add_model("selected", vertices=v, indices=i)
     SLECTED.add_instances([[0, 0, 0]], [12], "selected")
 
-    coll = Collectible(render, ctx=render.ctx, program=render.item_program)
+    coll = Collectible(render)
 
     pos = WORLD.get_block_pos_at(5, 0)
     pos[1] += 1
@@ -230,38 +224,18 @@ def init(render):
     coll.add_collectibles([pos], [0], [colletced])
 
     hud = HUDText(
-    ctx=render.ctx,
-    program=render.HUDText_program,
-    charset=CHARSET,
+    render=render,
+    charset=CHARSET
     )
 
-    hud.add_texts(["FPS: negative Infinity", "SELECTED BLOCK: water"], [[0, 0], [0, 30]], ["FPS", "sb"])
+    hud.add_texts(["FPS: negative Infinity", "SELECTED BLOCK: birch leave"], [[0, 0], [0, 30]], ["FPS", "sb"])
 
-    glfw.set_cursor_pos_callback(render.window, CAMERA.cursor_move)
-
-    glfw.set_window_size_callback(render.window, lambda x,y,z: resized(render,y,z))
+    render.set_window_size_callback(lambda x,y,z: render.resized(render,y,z))
 
     load_mods()
 
     for name in mods_names:
         exec(f"globals()['mods'].{name}.Mod.init(globals(), locals())", globals(), locals())
-
-def update_programs(render, **kwargs):
-    render.blocks_program["view"].write(kwargs["view"])
-    render.blocks_program["lightPos"].value = kwargs["lightPos"]
-    render.blocks_program["viewPos"].write(kwargs["viewPos"])
-
-    render.text_program["view"].write(kwargs["view"])
-    render.text_program["lightPos"].value = kwargs["lightPos"]
-    render.text_program["viewPos"].write(kwargs["viewPos"])
-
-    render.chunk_program["view"].write(kwargs["view"])
-    render.chunk_program["lightPos"].value = kwargs["lightPos"]
-    render.chunk_program["viewPos"].write(kwargs["viewPos"])
-
-    render.item_program["view"].write(kwargs["view"])
-    render.item_program["lightPos"].value = kwargs["lightPos"]
-    render.item_program["viewPos"].write(kwargs["viewPos"])
 
 posses, rotations = [], []
 block_updates = []
@@ -275,9 +249,9 @@ def multiplayer_thread(blocks_placed, blocks_broken):
     send_data_to_server({
         "setData": True,
         "id": NETWORK.id,
-        "coords":CAMERA.position.tolist(),
-        "yaw":CAMERA.yaw,
-        "pitch": CAMERA.pitch
+        "coords":render.CAMERA.position.tolist(),
+        "yaw":render.CAMERA.yaw,
+        "pitch": render.CAMERA.pitch
     }, NETWORK)
 
     playerdata = send_data_to_server({
@@ -380,27 +354,29 @@ pause = False
 
 blocks_placed, blocks_broken = [], []
 
-def update(render):
-    global CAMERA, coll, min_x, max_x, min_y, max_y, PLAYERS, playerdata, source, hud, frames_passed, start_second, SLECTED, selected_block, pressed,blocks_placed, blocks_broken, pause
+start_pos = None
 
-    if glfw.get_key(render.window, glfw.KEY_ESCAPE) == glfw.PRESS and cooldown3.is_active:
+def update(render):
+    global coll, min_x, max_x, min_y, max_y, PLAYERS, playerdata, source, hud, frames_passed, start_second, SLECTED, selected_block, pressed,blocks_placed, blocks_broken, pause, start_pos
+
+    if render.get_key(render.KEY_ESCAPE) == render.PRESS and cooldown3.is_active:
         pause = not pause
         if pause == True:
-            glfw.set_input_mode(render.window,glfw.CURSOR,glfw.CURSOR_NORMAL)
+            render.set_input_mode(render.CURSOR,render.CURSOR_NORMAL)
             source.stop()
         else:
-            glfw.set_input_mode(render.window,glfw.CURSOR,glfw.CURSOR_DISABLED)
+            render.set_input_mode(render.CURSOR,render.CURSOR_DISABLED)
 
     if pause:
         return
 
     #play EPIC music
     if source is None or not source.get_state() == openal.AL_PLAYING:
-        source = playsound(f"assets/songs/{random.choice(["PEAK-SONG-mono.wav", "Song2-mono.wav", "Song3-mono.wav"])}")
+        source = playsound(f"assets/songs/{random.choice(["PEAK-SONG-mono.wav", "Song2-mono.wav", "Song3-mono.wav"])}", sound_position=(0, 3, 0))
 
     render.ctx.clear(0, 0, 0)
 
-    listed_camera = CAMERA.position.tolist()
+    listed_camera = render.CAMERA.position.tolist()
     inted_camera = list(map(int, listed_camera))
     camera_chunk_pos = [inted_camera[0]//10*10, 0, inted_camera[2]//10*10]
 
@@ -417,12 +393,12 @@ def update(render):
     all_sets = [WORLD.get_chunk_at([x, 0, z]).blocks.occupied for x, z in square_range(camera_chunk_pos, 1, 10)]
     last = set().union(*all_sets)
 
-    CAMERA.update(last)
+    render.CAMERA.update(last)
     coll.update(inted_camera)
     coll.render()
     block_placed, block_removed = None, None
 
-    if result := raycast(last, CAMERA.eye_pos, CAMERA.front): #eye_pos bc ray starts from eyes
+    if result := raycast(last, render.CAMERA.eye_pos, render.CAMERA.front): #eye_pos bc ray starts from eyes
         position, normal = result
     
         a = Matrix44.from_scale([1.02, 1.02, 1.02]) @ Matrix44.from_translation(position)
@@ -431,12 +407,12 @@ def update(render):
 
         SLECTED.instanedmodels["selected"]._upload()
 
-        if glfw.get_mouse_button(render.window, glfw.MOUSE_BUTTON_LEFT) == glfw.PRESS and cooldown.is_active:
+        if render.get_mouse_button(render.MOUSE_BUTTON_LEFT) == render.PRESS and cooldown.is_active:
             WORLD.place_block(get_block(selected_block, (position + normal).tolist()))
             block_placed = (selected_block, (position + normal).tolist())
             blocks_placed.append(block_placed)
 
-        if glfw.get_mouse_button(render.window, glfw.MOUSE_BUTTON_RIGHT) == glfw.PRESS and cooldown2.is_active:
+        if render.get_mouse_button(render.MOUSE_BUTTON_RIGHT) == render.PRESS and cooldown2.is_active:
             WORLD.destroy_block(WORLD.get_block_at(position.tolist()))
             block_removed = position.tolist()
             blocks_broken.append(block_removed)
@@ -445,8 +421,6 @@ def update(render):
 
     if MULTIPLAYER:
         process_multiplayer(PLAYERS, blocks_placed, blocks_broken)
-
-    update_programs(render, view=CAMERA.view.astype("f4").tobytes(), lightPos=(9, 50, 9), viewPos=CAMERA.position.astype("f4").tobytes())
 
     for name in mods_names:
         exec(f"globals()['mods'].{name}.Mod.update(globals(), locals())", globals(), locals())
@@ -460,15 +434,25 @@ def update(render):
 
 
     if MOVE_WINDOW:
-        if random.random() * 100 > 99.99:
-            glfw.set_window_pos(render.window, random.randrange(0, 700), random.randrange(0, 700))
+        x = datetime.datetime.now()
 
-    if glfw.get_key(render.window, glfw.KEY_LEFT_ALT) == glfw.PRESS and not pressed:
+        if x.minute == 46:
+            if start_pos is None:
+                start_pos = render.get_window_pos()
+
+            render.set_window_pos(random.randrange(0, 700), random.randrange(0, 700))
+
+        elif x.minute == 47 and start_pos is not None:
+            render.set_window_pos(*start_pos)
+            start_pos = None
+
+
+    if render.get_key(render.KEY_LEFT_ALT) == render.PRESS and not pressed:
         selected_block = next(generator)
         pressed = True
         hud.update_text("sb", f"SELECTED BLOCK: {selected_block.replace("_", " ")}", [0, 30])
         
-    elif glfw.get_key(render.window, glfw.KEY_LEFT_ALT) != glfw.PRESS and pressed:
+    elif render.get_key(render.KEY_LEFT_ALT) != render.PRESS and pressed:
         pressed = False
 
 
@@ -492,5 +476,22 @@ source.stop()
 if MULTIPLAYER:
     send_data_to_server({"disconnect": True, "id": NETWORK.id}, NETWORK)
     NETWORK.close()
+
+if not MULTIPLAYER:
+    print("Saving world")
+    data = bytes()
+    for chunk in WORLD.chunks.blocks_list:
+        for block in chunk.blocks.blocks_list:            
+            data += struct.pack('>qqqB', *block.position, block.texture)
+
+    save("world.bin", data)
+
+    data = struct.pack(">ddd", *(render.CAMERA.position.tolist()))
+
+    save("player.bin", data)
+
+    print("Saved world")
+
+    
 
 print("Stopped executing game.")

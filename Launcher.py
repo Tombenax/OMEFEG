@@ -24,6 +24,7 @@ def open_omefeg_flag():
     root.destroy()
 
 MULTIPLAYER = False
+LOAD_WORLD = False
 
 def set_flag(flag, state, *args):
     globals()[flag] = state
@@ -39,7 +40,7 @@ def clear_log_chache():
 launch = tk.Button(root, text="Launch OMEFEG", command=open_omefeg_flag)
 launch.pack(pady=20)
 
-select_multiplayer = tk.Button(root, text="Turn Multiplayer ON", command=lambda: set_flag("MULTIPLAYER", True, select_multiplayer, "Turn Multiplayer OFF", "Turn Multiplayer ON"))
+select_multiplayer = tk.Button(root, text="Multiplayer: OFF", command=lambda: set_flag("MULTIPLAYER", True, select_multiplayer, "Multiplayer: ON", "Multiplayer: OFF"))
 select_multiplayer.pack(pady=20, padx=20)
 
 multiplayer_i_txt = tk.Label(root, text="Input serer IP below")
@@ -47,6 +48,9 @@ multiplayer_i_txt.pack(pady=20, padx=20)
 
 multiplayer_ip = tk.Entry(root)
 multiplayer_ip.pack(pady=20, padx=20)
+
+select_load_world = tk.Button(root, text="Load World: No", command=lambda: set_flag("LOAD_WORLD", True, select_load_world, "Load World: Yes", "Load World: No"))
+select_load_world.pack(pady=20, padx=20)
 
 clear_log_ch = tk.Button(root, text="Clear Log Chache", command=clear_log_chache)
 clear_log_ch.pack(pady=20, padx=20)
@@ -62,9 +66,14 @@ if open_omefeg:
         values["multiplayer_ip"] = values["multiplayer_ip"].removeprefix("NOMOVEWINDOW")
         command += f" --not_move_window True"
 
-    if MULTIPLAYER:
+    if MULTIPLAYER and not LOAD_WORLD:
         print(f"Conncting to srever:", values["multiplayer_ip"])
         command += f" --multiplayer {values["multiplayer_ip"]}"
+
+    elif LOAD_WORLD:
+        print("Loading World")
+        command += " --load_world True"
+
 
     print("Executing game with command:", command)
 

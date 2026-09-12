@@ -9,10 +9,10 @@ class BlocksList:
 
     def add(self, block):
         self.blocks_list.append(block)
-        self.blocks_positions[block] = block.position
+        self.blocks_positions[block] = list(block.position)
         self.positions_blocks[tuple(block.position)] = block
         self.occupied.add(tuple(block.position))
-        self.positions.append(block.position)
+        self.positions.append(list(block.position))
         self.textures.append(block.texture)
 
     def extend(self, blocks):
@@ -33,6 +33,15 @@ class BlocksList:
         position_index = self.positions.index(block.position)
         self.positions.pop(position_index)
         self.textures.pop(position_index)
+
+    def clear(self):
+        self.blocks_list.clear()
+        self.blocks_positions.clear()
+        self.positions_blocks.clear()
+        self.occupied.clear()
+        self.positions.clear()
+        self.textures.clear()
+
 
 class ChunksList:
     def __init__(self):

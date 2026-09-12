@@ -1,6 +1,7 @@
 import math
 from random import Random
 import random
+from typing import Callable
 from decorators import cache
 
 @cache
@@ -298,7 +299,34 @@ def get_block(name:str, position:list[float | int]):
     print(Fore.YELLOW + f"Unrecognized block: {name}")
     print(Style.RESET_ALL)
 
-    return Block(name, position, name, {0:place, 1:destroy}, True)
+def get_texture(idx:int, x, y, z):
+    match idx:
+        case 0:
+            return Birch_Leave([x, y, z])
+        case 1:
+            return Birch_Log([x, y, z])
+        case 2:
+            return Cobblestone([x, y, z])
+        case 3:
+            return Dirt([x, y, z])
+        case 4:
+            return Grass([x, y, z])
+        case 5:
+            return Oak_Leave([x, y, z])
+        case 6:
+            return Oak_Log([x, y, z])
+        case 7:
+            return Oak_Planks([x, y, z])
+        case 8:
+            return Sand([x, y, z])
+        case 9:
+            return Stone([x, y, z])
+        case 10:
+            return Water([x, y, z])
+
+    print(Fore.YELLOW + f"Unrecognized idx: {idx}")
+    print(Style.RESET_ALL)
+
 
 @cache
 def sum_list(list1, list2):
@@ -433,68 +461,33 @@ def raycast(occupied, start, front, max_iterations=10):
 
         last = pos.copy()
 
-            
+from pathlib import Path
+
+def save(filename:str, data):
+    homedir = os.path.expanduser("~")
+    appdata = os.path.join(homedir, "AppData", "Roaming", "OMEFEG")
+    if not Path(appdata).exists():
+        os.mkdir(appdata)
+
+    with open(os.path.join(appdata, filename), "wb") as f:
+        f.write(data)
+
+def open_save_file(filename:str, callback:Callable):
+    homedir = os.path.expanduser("~")
+    appdata = os.path.join(homedir, "AppData", "Roaming", "OMEFEG")
+    if not Path(appdata).exists():
+        os.mkdir(appdata)
+
+    if not Path(os.path.join(appdata, filename)).exists():
+        return None
+
+    with open(os.path.join(appdata, filename), "rb") as f:
+        readed = f.read()
+
+    return callback(readed)
+
 
 
 if __name__ == "__main__":
     #put tests here
     pass
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-#This software was made by teh owner of the gmail account of "Tombenax@gmail.com", any attempt of selling or distributing will result in legal actions.
-#If someone presents this software as they'rs just know that it's not
-#IF THIS COMMENT ARE MISSING OR MODIFY THE SOFTwARE HAS BEEN STOLEN

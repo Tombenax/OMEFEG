@@ -1,0 +1,57 @@
+Traceback (most recent call last):
+  File "C:\Users\benas\Documents\GitHub\OMEFEG\OMEFEG.py", line 522, in <module>
+    render = Render(init, update)
+  File "C:\Users\benas\Documents\GitHub\OMEFEG\Render.py", line 82, in __init__
+    self.init_function(self)
+    ~~~~~~~~~~~~~~~~~~^^^^^^
+  File "C:\Users\benas\Documents\GitHub\OMEFEG\OMEFEG.py", line 212, in init
+    chunk = WORLD.get_chunk_at(chunk_pos)
+  File "C:\Users\benas\Documents\GitHub\OMEFEG\World.py", line 186, in get_chunk_at
+    self.generate_chunk_at(chunk_pos)
+    ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^
+  File "C:\Users\benas\Documents\GitHub\OMEFEG\World.py", line 120, in generate_chunk_at
+    chunk = Chunk(self.render, position, self.seed, self.heightmap, self.biomes_map, self.rules, **self.kwargs)
+  File "C:\Users\benas\Documents\GitHub\OMEFEG\Chunk.py", line 20, in __init__
+    terrain = generate_terrain(height_map=heightmap, biomes_map=biomes_map, offsett=position, rules_=rules, random_seed=seed, sin_world=True if kwargs.get("sin_world") else False, biomes=True if kwargs.get("biomes") else False)
+  File "C:\Users\benas\Documents\GitHub\OMEFEG\decorators.py", line 43, in inner
+    result = func(*args, **kwargs)
+  File "C:\Users\benas\Documents\GitHub\OMEFEG\utils.py", line 42, in generate_terrain
+    bom = rules_["all"][biomes_map[offsett[0], offsett[2]]]
+                        ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\benas\Documents\GitHub\OMEFEG\World.py", line 104, in __getitem__
+    self._expand(x, z)
+    ~~~~~~~~~~~~^^^^^^
+  File "C:\Users\benas\Documents\GitHub\OMEFEG\World.py", line 81, in _expand
+    self._noise(new_x, new_z)
+    ~~~~~~~~~~~^^^^^^^^^^^^^^
+  File "C:\Users\benas\Documents\GitHub\OMEFEG\World.py", line 28, in _noise
+    self._values[key] = self.noise(
+                        ~~~~~~~~~~^
+        (x / self.scale) + 0.1,
+        ^^^^^^^^^^^^^^^^^^^^^^^
+        (z / self.scale) + 0.1
+        ^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\benas\Documents\GitHub\OMEFEG\perlineNoise.py", line 10, in __call__
+    return self.perlin((x, y))
+           ~~~~~~~~~~~^^^^^^^^
+  File "C:\Users\benas\AppData\Local\Programs\Python\Python313\Lib\site-packages\perlin_noise\perlin_noise.py", line 57, in __call__
+    return self.noise(coordinates, tile_sizes)
+           ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\benas\AppData\Local\Programs\Python\Python313\Lib\site-packages\perlin_noise\perlin_noise.py", line 106, in noise
+    self.get_from_cache_of_create_new(coors, tile_sizes).get_weighted_val(
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\benas\AppData\Local\Programs\Python\Python313\Lib\site-packages\perlin_noise\perlin_noise.py", line 128, in get_from_cache_of_create_new
+    return RandVec(coors, self.seed * hasher(coors, tile_sizes))
+  File "C:\Users\benas\AppData\Local\Programs\Python\Python313\Lib\site-packages\perlin_noise\rand_vec.py", line 21, in __init__
+    self.vec = sample_vector(dimensions=len(self.coordinates), seed=seed)
+               ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\benas\AppData\Local\Programs\Python\Python313\Lib\site-packages\perlin_noise\tools.py", line 40, in sample_vector
+    random.seed(seed)
+    ~~~~~~~~~~~^^^^^^
+  File "C:\Users\benas\AppData\Local\Programs\Python\Python313\Lib\random.py", line 128, in seed
+    def seed(self, a=None, version=2):
+    
+KeyboardInterrupt
+^C

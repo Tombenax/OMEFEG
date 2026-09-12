@@ -3,7 +3,7 @@ from Number import Number
 class Block:
     def __init__(self, block:str, position:list[Number], texture:int, proprieties:dict, collides:bool=True):
         self.block = block
-        self.position = position
+        self.position = list(position)
         self.texture = texture
         self.proprieties = proprieties
         self.collides = collides

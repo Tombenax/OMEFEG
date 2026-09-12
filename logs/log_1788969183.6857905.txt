@@ -1,0 +1,5 @@
+Traceback (most recent call last):
+  File "C:\Users\benas\Documents\GitHub\OMEFEG\OMEFEG.py", line 79, in <module>
+    with open("worldgeneration/worldGeneration.json", "r") as f:
+         ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: 'NoneType' object does not support the context manager protocol

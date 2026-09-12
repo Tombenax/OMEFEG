@@ -14,7 +14,7 @@ OAK_LOG = 6
 OAK_PLANKS = 7
 SAND = 8
 STONE = 9
-WATER_1 = 10
+WATER = 10
 
 
 
@@ -112,7 +112,7 @@ MAX_WATER_LENGHT = 5
 
 class Water(Block):
     def __init__(self, position: list[float | int], source:bool=True, lenght:int=MAX_WATER_LENGHT):
-        super().__init__("water", position, WATER_1, {0:None}, False)
+        super().__init__("water", position, WATER, {0:None}, False)
         self.source = source
         self.lenght = lenght
         self.chunk_pos = (self.position[0]//10*10, 0, self.position[2]//10*10)
@@ -150,44 +150,3 @@ class Cobblestone(Block):
 
     def on_player_top(self, neighbours:dict[tuple, Block], player):
         pass
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-#This software was made by teh owner of the gmail account of "Tombenax@gmail.com", any attempt of selling or distributing will result in legal actions.
-#If someone presents this software as they'rs just know that it's not
-#IF THIS COMMENT ARE MISSING OR MODIFY THE SOFTwARE HAS BEEN STOLEN

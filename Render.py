@@ -5,16 +5,16 @@ import json
 from pyrr import Matrix44
 
 from Number import Number
-import glfw
 import moderngl
 from PIL import Image
 import numpy as np
 import os
 import random
 from utils import distance
-
-
 import math
+
+# Import glfw abstraction
+import glfw
 
 glfw.init()
 
@@ -52,14 +52,111 @@ ITEMS_COUNT = (ITEMS_W / ITEM_W) * (ITEMS_H / ITEM_H)
 
 
 class Render:
+
+    PRESS = glfw.PRESS
+
+    KEY_W = glfw.KEY_W
+    KEY_S = glfw.KEY_S
+    KEY_A = glfw.KEY_A
+    KEY_D = glfw.KEY_D
+
+    KEY_LEFT_CONTROL = glfw.KEY_LEFT_CONTROL
+
+    KEY_F = glfw.KEY_F
+
+    KEY_ESCAPE = glfw.KEY_ESCAPE
+
+    CURSOR = glfw.CURSOR
+    CURSOR_NORMAL = glfw.CURSOR_NORMAL
+    CURSOR_DISABLED = glfw.CURSOR_DISABLED
+
+    MOUSE_BUTTON_RIGHT = glfw.MOUSE_BUTTON_RIGHT
+
+    MOUSE_BUTTON_LEFT = glfw.MOUSE_BUTTON_LEFT
+
+    KEY_LEFT_ALT = glfw.KEY_LEFT_ALT
+
+    FOV = 60
+
+    PROJECTION = np.array(Matrix44.perspective_projection(FOV, WIDTH/HEIGHT, 0.1, 1000), dtype='f4')
+
+    def get_key(self, key:int):
+        return glfw.get_key(self.window, key)
+
+    def set_cursor_pos_callback(self, callback:Callable):
+        glfw.set_cursor_pos_callback(self.window, callback)
+
+    def set_window_size_callback(self, callback:Callable):
+        glfw.set_window_size_callback(self.window, callback)
+
+    def set_input_mode(self, input_mode, value):
+        glfw.set_input_mode(self.window, input_mode, value)
+
+    def get_mouse_button(self, button:int):
+        return glfw.get_mouse_button(self.window, button)
+
+    def set_window_pos(self, x, y):
+        glfw.set_window_pos(self.window, x, y)
+
+    def get_window_pos(self):
+        return glfw.get_window_pos(self.window)
+
+    def resized(self, width, height):
+        global PROJECTION, WIDTH, HEIGHT
+
+        self.ctx.viewport = (0, 0, width, height)
+
+        WIDTH, HEIGHT = width, height
+
+        self.PROJECTION = np.array(Matrix44.perspective_projection(self.FOV, WIDTH/HEIGHT, 0.1, 1000), dtype='f4')
+
+    def init_programs(self):
+        self.blocks_program["atlasArray"] = 0
+        self.blocks_program["projection"].write(self.PROJECTION)
+        self.blocks_program["frame"] = 0
+        self.blocks_program["chance"] = -1
+        self.blocks_program["TEXTURE_W"] = TEXTURE_W
+        self.blocks_program["TEXTURE_H"] = TEXTURE_H
+        self.blocks_program["ATLAS_W"] = ATLAS_W
+        self.blocks_program["ATLAS_H"] = ATLAS_H
+
+        self.text_program["atlasArray"] = 1
+        self.text_program["projection"].write(self.PROJECTION)
+        self.text_program["frame"] = 0
+        self.text_program["chance"] = -1
+        self.text_program["TEXTURE_W"] = CHR_W
+        self.text_program["TEXTURE_H"] = CHR_H
+        self.text_program["ATLAS_W"] = CHAR_W
+        self.text_program["ATLAS_H"] = CHAR_H
+
+        self.item_program["atlasArray"] = 2
+        self.item_program["projection"].write(self.PROJECTION)
+        self.item_program["frame"] = 0
+        self.item_program["chance"] = -1
+        self.item_program["TEXTURE_W"] = ITEM_W
+        self.item_program["TEXTURE_H"] = ITEM_H
+        self.item_program["ATLAS_W"] = ITEMS_W
+        self.item_program["ATLAS_H"] = ITEMS_H
+
+        self.chunk_program["atlasArray"] = 0
+        self.chunk_program["projection"].write(self.PROJECTION)
+
+        self.HUDText_program["atlasArray"] = 1
+        self.HUDText_program["screenSize"].value = (WIDTH, HEIGHT)
+        self.HUDText_program["TEXTURE_W"] = CHR_W
+        self.HUDText_program["TEXTURE_H"] = CHR_H
+        self.HUDText_program["ATLAS_W"] = CHAR_W
+        self.HUDText_program["ATLAS_H"] = CHAR_H
+
     def __init__(self, init_function:Callable, update_function:Callable):
         self.init_function = init_function
         self.update_function = update_function
 
         self.window = glfw.create_window(WIDTH, HEIGHT, "OMEFEG", None, None)
+
         glfw.make_context_current(self.window)
 
-        glfw.set_input_mode(self.window,glfw.CURSOR,glfw.CURSOR_DISABLED)
+        glfw.set_input_mode(self.window, glfw.CURSOR, glfw.CURSOR_DISABLED)
 
         icon = Image.open("assets/icon.png").convert("RGBA")
         width, height = icon.size
@@ -78,6 +175,12 @@ class Render:
         self.create_programs()
 
         self.load_textures()
+
+        self.CAMERA = Camera([0, 2, 0], self)
+
+        self.set_cursor_pos_callback(self.CAMERA.cursor_move)
+
+        self.init_programs()
 
         self.init_function(self)
 
@@ -132,6 +235,24 @@ class Render:
                 self.load_shader(os.path.join(shader_base_path, shader, "fragment.glsl"))
                 ]
 
+    def update_programs(self):
+        self.blocks_program["view"].write(self.CAMERA.view.astype("f4").tobytes())
+        self.blocks_program["lightPos"].value = (9, 50, 9)
+        self.blocks_program["viewPos"].write(self.CAMERA.position.astype("f4").tobytes())
+
+        self.text_program["view"].write(self.CAMERA.view.astype("f4").tobytes())
+        self.text_program["lightPos"].value = (9, 50, 9)
+        self.text_program["viewPos"].write(self.CAMERA.position.astype("f4").tobytes())
+
+        self.chunk_program["view"].write(self.CAMERA.view.astype("f4").tobytes())
+        self.chunk_program["lightPos"].value = (9, 50, 9)
+        self.chunk_program["viewPos"].write(self.CAMERA.position.astype("f4").tobytes())
+
+        self.item_program["view"].write(self.CAMERA.view.astype("f4").tobytes())
+        self.item_program["lightPos"].value = (9, 50, 9)
+        self.item_program["viewPos"].write(self.CAMERA.position.astype("f4").tobytes())
+
+
     def update(self):
         last = time.time()
         while not glfw.window_should_close(self.window):
@@ -140,6 +261,8 @@ class Render:
             last = now
 
             glfw.poll_events()
+
+            self.update_programs()
 
             self.update_function(self)
 
@@ -151,14 +274,14 @@ class InstancedModel:
     def __init__(self, **kwargs:dict[str, Any]):
         """
         aruments:
-            ctx: moderngl context
-            program: moderngl program,
+            render: Render instance
             indices: model's indices
             vertices: model's vertices
+            !USED BY CHUNKS DUMMIES! is_chunk_dummy
         """
 
-        self.ctx = kwargs["ctx"]
-        self.program = kwargs["program"]
+        self.ctx = kwargs["render"].ctx
+        self.program = kwargs["render"].blocks_program if not kwargs.get("is_chunk_dummy") else kwargs["render"].chunk_program
 
         self.indices = kwargs["indices"]
         self.vertices = kwargs["vertices"]
@@ -290,15 +413,15 @@ class Model:
     def add_model(self, identifier:str, **kwargs:dict[str, Any]):
         """
         args:
-            program: moderngl program
             vertices: model's vertices
             indices: model's indices
+            !ONlY USED BY CHUNK DUMMIES! is_chunk_dummy
         """
         self.instanedmodels[identifier] = InstancedModel(
-            ctx=self.renderer.ctx,
-            program=kwargs["program"],
+            render=self.renderer,
             indices = kwargs["indices"],
-            vertices = kwargs["vertices"]
+            vertices = kwargs["vertices"],
+            is_chunk_dummy = kwargs.get("is_chunk_dummy")
         )
 
     
@@ -307,7 +430,8 @@ class Model:
 
     def remove_instance(self, index:Number, model_identifier:str):
         """Remove an instance at position from the specified model. Returns True if removed, False if not found."""
-        return self.instanedmodels[model_identifier].remove_instance(index)
+        if model_identifier in self.instanedmodels:
+            return self.instanedmodels[model_identifier].remove_instance(index)
 
     def remove_instances(self, positions:list[list[Number]], model_identifier:str):
         return self.instanedmodels[model_identifier].remove_instances(positions)
@@ -318,6 +442,9 @@ class Model:
     def render(self):
         for identifier in self.instanedmodels.keys():
             self.render_one(identifier)
+
+def get_key(window, key):
+    return glfw.get_key(window, key)
 
 class Camera:
     def __init__(self, position, render: Render):
@@ -436,27 +563,27 @@ class Camera:
         move = np.zeros(3, dtype=float)
 
 
-        self.sprint = glfw.get_key(self.render.window, glfw.KEY_LEFT_CONTROL)
-        self.fly = glfw.get_key(self.render.window, glfw.KEY_F)
+        self.sprint = get_key(self.render.window, glfw.KEY_LEFT_CONTROL)
+        self.fly = get_key(self.render.window, glfw.KEY_F)
 
         self.speed = (
             13 if self.sprint else 30 if self.fly else 7
         )
 
-        if glfw.get_key(self.render.window, glfw.KEY_R) == glfw.PRESS:
+        if get_key(self.render.window, glfw.KEY_R):
             self.position = self.start_pos.copy()
         
 
-        if glfw.get_key(self.render.window, glfw.KEY_W) == glfw.PRESS:
+        if get_key(self.render.window, glfw.KEY_W):
             move += (self.go if not self.fly else self.front) * self.render.dt * self.speed
 
-        if glfw.get_key(self.render.window, glfw.KEY_S) == glfw.PRESS:
+        if get_key(self.render.window, glfw.KEY_S):
             move -= (self.go if not self.fly else self.front) * self.render.dt * self.speed
 
-        if glfw.get_key(self.render.window, glfw.KEY_A) == glfw.PRESS:
+        if get_key(self.render.window, glfw.KEY_A):
             move += self.right * self.render.dt * self.speed
 
-        if glfw.get_key(self.render.window, glfw.KEY_D) == glfw.PRESS:
+        if get_key(self.render.window, glfw.KEY_D):
             move -= self.right * self.render.dt * self.speed
 
         # Don't move vertically
@@ -469,12 +596,12 @@ class Camera:
 
         self.vel_y -= self.gravity * self.render.dt
 
-        if glfw.get_key(self.render.window, glfw.KEY_SPACE) == glfw.PRESS and (self.on_ground or self.jumps < self.max_jumps) and self.trust_me:
+        if get_key(self.render.window, glfw.KEY_SPACE) and (self.on_ground or self.jumps < self.max_jumps) and self.trust_me:
             self.vel_y = self.jump_strenght 
             self.jumps += 1
             self.trust_me = False
 
-        if glfw.get_key(self.render.window, glfw.KEY_SPACE) != glfw.PRESS: self.trust_me = True
+        if get_key(self.render.window, glfw.KEY_SPACE) != glfw.PRESS: self.trust_me = True
 
         dy = self.vel_y * self.render.dt
 
@@ -535,9 +662,6 @@ class Camera:
         else:
             self.on_ground = False
 
-        
-
-        
 def load_obj(file_path:str):
     positions = []
     normals = []
@@ -594,13 +718,13 @@ class InstancedText:
     def __init__(self, **kwargs):
         """
         args:
-            ctx: moderngl context
-            program: moderngl program
+            render: Render instance
             charset: charset
+            !ONLY USED BY HUDText! is_hud_text
         """
 
-        self.ctx = kwargs["ctx"]
-        self.program = kwargs["program"]
+        self.ctx = kwargs["render"].ctx
+        self.program = kwargs["render"].text_program if not kwargs.get("is_hud_text") else kwargs["render"].HUDText_program
         self.charset_lookup = {}
         for idx, key in enumerate(kwargs["charset"]):
             self.charset_lookup[key] = idx
@@ -746,11 +870,10 @@ class InstancedText:
 
 
 class Collectible:
-    def __init__(self, render, **kwargs):
+    def __init__(self, render):
         """
         args:
-            ctx: moderngl context
-            program: moderngl program
+            render: Render instance
         """
         #quad facing X-
         self.vertices = np.array([
@@ -770,8 +893,8 @@ class Collectible:
             3, 4, 5
         ], dtype="i4")
 
-        self.program = kwargs["program"]
-        self.ctx = kwargs["ctx"]
+        self.program = render.item_program
+        self.ctx = render.ctx
 
         self.vbo = self.ctx.buffer(self.vertices.tobytes())
         self.ibo = self.ctx.buffer(self.indices.tobytes())
@@ -842,7 +965,7 @@ class Collectible:
             if distance(a, player_position) < 3:
                 self.instances = np.delete(self.instances, i, axis=0)
                 self.tex_insta = np.delete(self.tex_insta, i, axis=0)
-                self.callbacks[i]()
+                self.callbacks[i](self.render_)
                 continue
 
             x = Matrix44.from_x_rotation(self.render_.dt)
@@ -864,7 +987,7 @@ class Collectible:
 
 class HUDText(InstancedText):
     def __init__(self, **kwargs):
-        super().__init__(**kwargs)
+        super().__init__(**kwargs, is_hud_text=True)
 
         self.screen_size = kwargs.get("screen_size", (WIDTH, HEIGHT))
 
@@ -916,12 +1039,6 @@ if __name__ == "__main__":
         
         PROJECTION = np.array(Matrix44.perspective_projection(FOV, WIDTH/HEIGHT, 0.1, 1000), dtype='f4')
 
-        for name in render.text_program:
-            print(
-                name,
-                render.text_program[name]
-            )
-
 
         render.blocks_program["atlasArray"] = 0
         render.blocks_program["projection"].write(PROJECTION)
@@ -943,7 +1060,7 @@ if __name__ == "__main__":
 
         render.MODEL = Model(render)
 
-        render.MODEL.add_model("block", program=render.blocks_program, vertices=CUBE_MODEL_INFO[0], indices=CUBE_MODEL_INFO[1])
+        render.MODEL.add_model("block", vertices=CUBE_MODEL_INFO[0], indices=CUBE_MODEL_INFO[1])
        # render.MODEL.add_instances([[10, 1.8, 0]], [GRASS], "block")
 
         render.text = InstancedText(ctx=render.ctx, program=render.text_program, charset=CHARSET)

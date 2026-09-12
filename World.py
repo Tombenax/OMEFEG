@@ -1,11 +1,29 @@
+from numpy import empty
+
 from Chunk import Chunk
 from Block import Block
-from Render import CUBE_MODEL_INFO
+import os
+import sys
+
+# True on PC, False on Android phones. Override with OMEFEG_DESKTOP=0/1.
+DESKTOP = os.environ.get("OMEFEG_DESKTOP")
+if DESKTOP is None:
+    DESKTOP = not hasattr(sys, "getandroidapilevel")
+else:
+    DESKTOP = DESKTOP == "1"
+
+if DESKTOP:
+    from Render import CUBE_MODEL_INFO
+else:
+    from MobileRender import CUBE_MODEL_INFO
 from allBlocks import *
 from lists import *
 from Number import Number
 from utils import export_and_load_chunk, square_range
-from Render import *
+if DESKTOP:
+    from Render import *
+else:
+    from MobileRender import *
 
 class HeightMap:
     def __init__(self, noise, width, depth, N, scale=10):
@@ -72,18 +90,20 @@ class HeightMap:
         old_width = self.width
         old_depth = self.depth
 
-        self.width = max(self.width, x + 1)
-        self.depth = max(self.depth, z + 1)
+        new_width = max(self.width, x + 1)
+        new_depth = max(self.depth, z + 1)
 
-        # Generate newly required values
-        for new_x in range(old_width, self.width):
-            for new_z in range(self.depth):
+        # Generate newly required values - only the new regions
+        for new_x in range(old_width, new_width):
+            for new_z in range(new_depth):
                 self._noise(new_x, new_z)
 
-        for new_z in range(old_depth, self.depth):
+        for new_z in range(old_depth, new_depth):
             for new_x in range(old_width):
                 self._noise(new_x, new_z)
 
+        self.width = new_width
+        self.depth = new_depth
         self._calculate_thresholds()
 
     def __getitem__(self, position):
@@ -116,10 +136,11 @@ class World:
 
         self.chunks:ChunksList = ChunksList()
 
-    def generate_chunk_at(self, position:list[Number]):
-        chunk = Chunk(self.render, position, self.seed, self.heightmap, self.biomes_map, self.rules, **self.kwargs)
+    def generate_chunk_at(self, position:list[Number], **kwargs):
+        chunk = Chunk(self.render, position, self.seed, self.heightmap, self.biomes_map, self.rules, **self.kwargs, empty=True if kwargs.get("empty") else False)
         self.chunks.add(chunk)
 
+        
     def get_y_at(self, x:Number, z:Number) -> Number:
         chunk_pos = [x // 10 * 10, 0, z // 10 * 10]
         if tuple(chunk_pos) in self.chunks.positions_blocks:
@@ -145,13 +166,7 @@ class World:
                 chunk.blocks.add(block)
                 chunk.model.add_instances([block.position], [block.texture], "block")
 
-                vertices, indices = export_and_load_chunk(chunk.blocks.positions, chunk.blocks.textures, CUBE_MODEL_INFO, TEXTURES_X, TEXTURES_Y)
-
-                chunk.model.remove_instance(0, "dummy")
-
-                chunk.model.add_model("dummy", vertices = vertices, indices = indices, program=chunk.render.chunk_program)
-
-                chunk.model.add_instances([[0, 0, 0]], [0], "dummy")
+                chunk._update_dummy()
 
     def destroy_block(self, block:Block):
         if block == None:
@@ -164,13 +179,7 @@ class World:
                 chunk.blocks.remove(block)
                 chunk.model.remove_instances([block.position], "block")
 
-                vertices, indices = export_and_load_chunk(chunk.blocks.positions, chunk.blocks.textures, CUBE_MODEL_INFO, TEXTURES_X, TEXTURES_Y)
-
-                chunk.model.remove_instance(0, "dummy")
-
-                chunk.model.add_model("dummy", vertices = vertices, indices = indices, program=chunk.render.chunk_program)
-
-                chunk.model.add_instances([[0, 0, 0]], [0], "dummy")
+                chunk._update_dummy()
 
 
     def render_chunks(self, camera_chunk_position, RENDER_DISTANCE):
@@ -178,9 +187,13 @@ class World:
             chunk.is_player_in = (camera_chunk_position == chunk.position)
             chunk.render_mesh()
 
-    def get_chunk_at(self, chunk_pos:list[Number]) -> Chunk:
+    def get_chunk_at(self, chunk_pos:list[Number], **kwargs) -> Chunk:
         #chunk_pos = [chunk_pos[0] // 10 * 10, 0, chunk_pos[2] // 10 * 10]
-        return self.chunks.positions_blocks.get(tuple(chunk_pos))
+        if self.chunks.positions_blocks.get(tuple(chunk_pos)):
+            return self.chunks.positions_blocks.get(tuple(chunk_pos))
+        else:
+            self.generate_chunk_at(chunk_pos, **kwargs)
+            return self.chunks.positions_blocks.get(tuple(chunk_pos))
 
     def get_block_at(self, position:list[Number]):
         chunk_pos = [position[0] // 10 * 10, 0, position[2] // 10 * 10]

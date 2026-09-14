@@ -6,8 +6,18 @@ import textwrap
 
 
 def classify_returns(func):
-    source = textwrap.dedent(inspect.getsource(func))
-    tree = ast.parse(source)
+    try:
+        source = textwrap.dedent(inspect.getsource(func))
+    except (OSError, TypeError):
+        # Android ships compiled .pyc without .py source (p4a also bakes
+        # the host compile path into code objects), so inspect can't
+        # fetch source on-device. Fall back to caching enabled: caching
+        # a None return is harmless, crashing the whole app is not.
+        return "return_value"
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError):
+        return "return_value"
 
     returns = [
         node

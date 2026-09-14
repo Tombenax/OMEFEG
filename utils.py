@@ -111,10 +111,31 @@ def generate_terrain(size=10, height_map=None, biomes_map=None, offsett=[0, 0, 0
 
     return blocks
 
-import openal
+try:
+    import openal
+except Exception as _e:
+    # Android / missing recipe: audio is optional, playsound() below
+    # degrades to a no-op dummy instead of crashing the import.
+    print(f"[utils] openal unavailable, audio disabled: {_e}")
+    openal = None  # type: ignore
 from Number import Number
 
+
+class _DummySound:
+    def play(self, *args, **kwargs):
+        pass
+
+    def stop(self, *args, **kwargs):
+        pass
+
+    def get_state(self, *args, **kwargs):
+        return None
+
+
 def playsound(sound:str, position:tuple[Number, Number, Number]=(0, 0, 0), sound_position:tuple[Number, Number, Number]=(0, 0, 0), orientation:tuple[Number, Number, Number, Number, Number, Number]=(0, 0, -1, 0, 1, 0), loop:bool=False):
+    if openal is None:
+        print(f"[audio disabled] would play: {sound}")
+        return _DummySound()
     listener = openal.oalGetListener()
     listener.set_position(position)
     listener.set_orientation(orientation)
@@ -129,23 +150,43 @@ def playsound(sound:str, position:tuple[Number, Number, Number]=(0, 0, 0), sound
 
 
 import asyncio
-from desktop_notifier import DesktopNotifier, Icon
-from pathlib import Path
+try:
+    from desktop_notifier import DesktopNotifier, Icon
+    from pathlib import Path
 
-notifier = DesktopNotifier()
-notifier.app_icon = Icon(path=Path("assets/icon.png").resolve())
-notifier.app_name = "Game"
+    notifier = DesktopNotifier()
+    notifier.app_icon = Icon(path=Path("assets/icon.png").resolve())
+    notifier.app_name = "Game"
+except Exception as _e:
+    # Android has no desktop notifier; fall back to log output.
+    print(f"[utils] desktop_notifier unavailable, notifications disabled: {_e}")
+    DesktopNotifier = None  # type: ignore
+    Icon = None  # type: ignore
+    Path = None  # type: ignore
+    notifier = None
 
 async def main(title, message):
+    if notifier is None:
+        print(f"[notification] {title}: {message}")
+        return
     await notifier.send(title, message)
 
 def notification(title, message):
+    if notifier is None:
+        print(f"[notification] {title}: {message}")
+        return
     asyncio.run(main(title, message))
 
-import requests
+try:
+    import requests
+except Exception as _e:
+    print(f"[utils] requests unavailable: {_e}")
+    requests = None  # type: ignore
 
 @cache
 def get_username_and_uuid(username, password):
+    if requests is None:
+        return "network disabled on this build"
     url = "https://tombenax.pythonanywhere.com/login"
 
     data = {
@@ -355,14 +396,24 @@ import getpass
 import json
 import os
 
-from argon2.low_level import hash_secret_raw, Type
-from cryptography.fernet import Fernet
+try:
+    from argon2.low_level import hash_secret_raw, Type
+    from cryptography.fernet import Fernet
+    _CRYPTO_OK = True
+except Exception as _e:
+    print(f"[utils] argon2/cryptography unavailable, accounts disabled: {_e}")
+    hash_secret_raw = None  # type: ignore
+    Type = None  # type: ignore
+    Fernet = None  # type: ignore
+    _CRYPTO_OK = False
 
 
 FILE = "account.dat"
 
 
 def derive_key(master_password, salt):
+    if not _CRYPTO_OK:
+        raise RuntimeError("account crypto unavailable on this build")
     key = hash_secret_raw(
         secret=master_password.encode(),
         salt=salt,
@@ -462,26 +513,38 @@ def raycast(occupied, start, front, max_iterations=10):
         last = pos.copy()
 
 from pathlib import Path
+import sys
+
+def _save_dir():
+    """Writable save folder on both PC and Android.
+
+    Desktop keeps the old %APPDATA%/OMEFEG location. On Android
+    (python-for-android) saves go to the app's private files dir
+    (e.g. .../files/OMEFEG), which is always writable. Uses
+    makedirs (not mkdir) so missing parents don't crash.
+    """
+    if hasattr(sys, "getandroidapilevel"):
+        base = os.environ.get("ANDROID_PRIVATE") or os.getcwd()
+        d = os.path.abspath(os.path.join(base, os.pardir, "OMEFEG"))
+    else:
+        homedir = os.path.expanduser("~")
+        d = os.path.join(homedir, "AppData", "Roaming", "OMEFEG")
+    os.makedirs(d, exist_ok=True)
+    return d
 
 def save(filename:str, data):
-    homedir = os.path.expanduser("~")
-    appdata = os.path.join(homedir, "AppData", "Roaming", "OMEFEG")
-    if not Path(appdata).exists():
-        os.mkdir(appdata)
+    d = _save_dir()
 
-    with open(os.path.join(appdata, filename), "wb") as f:
+    with open(os.path.join(d, filename), "wb") as f:
         f.write(data)
 
 def open_save_file(filename:str, callback:Callable):
-    homedir = os.path.expanduser("~")
-    appdata = os.path.join(homedir, "AppData", "Roaming", "OMEFEG")
-    if not Path(appdata).exists():
-        os.mkdir(appdata)
+    d = _save_dir()
 
-    if not Path(os.path.join(appdata, filename)).exists():
+    if not Path(os.path.join(d, filename)).exists():
         return None
 
-    with open(os.path.join(appdata, filename), "rb") as f:
+    with open(os.path.join(d, filename), "rb") as f:
         readed = f.read()
 
     return callback(readed)

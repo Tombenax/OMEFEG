@@ -113,6 +113,9 @@ def convert_to_blocks(data):
 mods_names = []
 
 def load_mods():
+    if not os.path.isdir("mods"):
+        # Empty/missing mods dir in the APK (e.g. Android): nothing to load.
+        return
     for mod in os.listdir("mods"):
         print(f"Loading mod: {mod}")
 
@@ -362,8 +365,12 @@ def update(render):
     if render.get_key(render.KEY_ESCAPE) == render.PRESS and cooldown3.is_active:
         pause = not pause
         if pause == True:
+            if source is not None:
+                try:
+                    source.stop()
+                except Exception:
+                    pass
             render.set_input_mode(render.CURSOR,render.CURSOR_NORMAL)
-            source.stop()
         else:
             render.set_input_mode(render.CURSOR,render.CURSOR_DISABLED)
 
@@ -371,7 +378,12 @@ def update(render):
         return
 
     #play EPIC music
-    if source is None or not source.get_state() == openal.AL_PLAYING:
+    try:
+        _al_playing = getattr(openal, "AL_PLAYING", object()) if openal is not None else object()
+        _is_playing = source is not None and source.get_state() == _al_playing
+    except Exception:
+        _is_playing = False
+    if source is None or not _is_playing:
         source = playsound(f"assets/songs/{random.choice(["PEAK-SONG-mono.wav", "Song2-mono.wav", "Song3-mono.wav"])}", sound_position=(0, 3, 0))
 
     render.ctx.clear(0, 0, 0)

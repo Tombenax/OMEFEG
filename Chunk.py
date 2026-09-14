@@ -1,6 +1,5 @@
 from random import Random
 
-from sympy import numer
 from utils import generate_terrain, export_and_load_chunk
 from Block import Block
 from allBlocks import *
@@ -82,7 +81,7 @@ class Chunk:
     def get_y_at(self, x:Number, z:Number) -> Number:
         return self.get_block_pos_at(x, z)[1] + 1
 
-    def get_block_pos_at(self, x:Number, z:Number) -> list[numer]:
+    def get_block_pos_at(self, x:Number, z:Number) -> list[Number]:
         arr = np.array(self.blocks.positions)
         return list(arr[(arr[:, 0] == x) & (arr[:, 2] == z)][0])
 

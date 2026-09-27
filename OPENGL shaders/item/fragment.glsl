@@ -36,14 +36,14 @@ void main() {
     // Always sample layer 0 because the whole atlas is layer 0
     vec4 tex = texture(atlasArray, vec3(v_uv, 0));
 
-    float r = rand(gl_FragCoord.xy, uint(frame));
-
     if (tex.a < 0.1)
         discard;
 
-    if (enable_funky_shaders)
+    if (enable_funky_shaders) {
+        float r = rand(gl_FragCoord.xy, uint(frame));
         if (r <= chance)
             discard;
+    }
 
     vec3 color = tex.rgb;
     vec3 norm = normalize(v_normal);

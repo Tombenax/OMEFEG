@@ -704,6 +704,36 @@ class InstancedModel:
     def _upload(self):
         self._rebuild()
 
+    def detach_gl(self):
+        """Detach this model's canvas objects (called when a model is
+        replaced, e.g. chunk dummy rebuilds).
+
+        Without this, the old RenderContext stays in the canvas and keeps
+        drawing stale geometry forever: breaking a block in a
+        dummy-rendered chunk leaves a visible ghost, and every rebuild
+        leaks another full-chunk draw (FPS death).
+        """
+        render = getattr(self, "_render", None)
+        try:
+            if render is not None:
+                try:
+                    render._models.remove(self)
+                except Exception:
+                    pass
+                rc = getattr(self, "_rc", None)
+                widget = getattr(render, "_game_widget", None)
+                if widget is not None and rc is not None:
+                    for parent in (widget.canvas, widget.canvas.after):
+                        try:
+                            parent.remove(rc)
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+        finally:
+            self._rc = None
+            self._mesh = None
+
     # -- Kivy GL objects (created lazily: init_function runs before the
     #    Kivy GL context exists, and headless tests never render) ----------
 
@@ -806,6 +836,12 @@ class Model:
             !ONlY USED BY CHUNK DUMMIES! is_chunk_dummy
             atlas: 'blocks' (default), 'chars' or 'items'
         """
+        old = self.instanedmodels.get(identifier)
+        if old is not None:
+            try:
+                old.detach_gl()
+            except Exception:
+                pass
         self.instanedmodels[identifier] = InstancedModel(
             render=self.renderer,
             indices=kwargs["indices"],
@@ -1760,6 +1796,13 @@ class Render:
         self._game_widget = None
         self._should_close = False
 
+        # Same defaults as desktop Render.py; the mobile shaders only use
+        # the first light (single GLES2 light, no shadow maps).
+        self.light_positions = [self._main_light()]
+        self.light_colors = [(1, 1, 1, 1)]
+        self._occupied = set()
+        self._occ_stamped = set()
+
         self._create_programs()
 
         self.CAMERA = Camera([0, 2, 0], self)
@@ -1838,7 +1881,7 @@ class Render:
             self.item_program,
         ):
             prog["view"].write(view_bytes)
-            prog["lightPos"].value = (9, 50, 9)
+            prog["lightPos"].value = self._main_light()
             prog["viewPos"].write(campos_bytes)
 
         proj = list(np.asarray(self.PROJECTION, dtype=np.float32).reshape(-1))
@@ -1846,9 +1889,67 @@ class Render:
         campos_l = [float(campos[0]), float(campos[1]), float(campos[2])]
         for model in list(self._models):
             try:
-                model.push_uniforms(proj, view_l, (9, 50, 9), campos_l)
+                model.push_uniforms(proj, view_l, self._main_light(), campos_l)
             except Exception:
                 pass
+
+    def _main_light(self):
+        """First light position for the single-light GLES2 shaders."""
+        try:
+            if self.light_positions:
+                p = self.light_positions[0]
+                return (float(p[0]), float(p[1]), float(p[2]))
+        except Exception:
+            pass
+        return (9, 50, 9)
+
+    def set_lights(self, positions, colors):
+        if len(positions) != len(colors):
+            raise ValueError("positions and colors must have the same length")
+        if len(positions) > 16:
+            raise ValueError("A maximum of 16 lights is supported")
+        self.light_positions = [tuple(position) for position in positions]
+        self.light_colors = [tuple(color) for color in colors]
+
+    def refresh_chunk_occupancy(self, chunk):
+        # Single-chunk refresh for place/destroy (see desktop Render).
+        # Nothing is uploaded on mobile; keep the compat set consistent
+        # without rescanning the world.
+        try:
+            occ = getattr(self, "_occupied", None)
+            if occ is None:
+                return False
+            cx, _, cz = chunk.position
+            occ = {p for p in occ
+                   if not (cx <= p[0] < cx + 10 and cz <= p[2] < cz + 10)}
+            occ.update(chunk.blocks.occupied)
+            self._occupied = occ
+            return True
+        except Exception:
+            return False
+
+    def update_block_occupancy(self, world):
+        # GLES2 has no 3D textures, so the mobile shaders do plain
+        # ambient+diffuse+specular lighting with no shadow maps. There is
+        # nothing to upload; just record the set for API compatibility
+        # with World.py / OMEFEG.py (which call this on the desktop build).
+        # Incremental: union only chunks not seen before (O(new blocks)).
+        try:
+            occ = getattr(self, "_occupied", None)
+            stamped = getattr(self, "_occ_stamped", None)
+            if occ is None or stamped is None:
+                self._occupied = set()
+                self._occ_stamped = set()
+                occ = self._occupied
+                stamped = self._occ_stamped
+            for chunk in world.chunks.blocks_list:
+                key = tuple(chunk.position)
+                if key not in stamped:
+                    occ.update(chunk.blocks.occupied)
+                    stamped.add(key)
+        except Exception:
+            self._occupied = set()
+            self._occ_stamped = set()
 
     # -- model registry / GL helpers ----------------------------------------
 
@@ -1960,7 +2061,7 @@ class Render:
             model.push_uniforms(
                 list(np.asarray(self.PROJECTION, dtype=np.float32).reshape(-1)),
                 list(np.asarray(view, dtype=np.float32).reshape(-1)),
-                (9, 50, 9),
+                self._main_light(),
                 [float(campos[0]), float(campos[1]), float(campos[2])],
             )
         except Exception:

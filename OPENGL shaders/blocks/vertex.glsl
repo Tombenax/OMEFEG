@@ -25,7 +25,10 @@ void main() {
     gl_Position = projection * view * worldPos;
 
     v_fragPos = worldPos.xyz;
-    v_normal = mat3(transpose(inverse(instance_model))) * in_normal;
+    // instance_model is translation-only for blocks (rotation-only for
+    // players), never non-uniform scale, so the inverse-transpose is just
+    // the upper 3x3. Avoids a per-vertex mat4 inverse (~30 ALU ops).
+    v_normal = mat3(instance_model) * in_normal;
 
     // Number of 64x64 textures across the atlas
     int columns = int(ATLAS_W / TEXTURE_W);

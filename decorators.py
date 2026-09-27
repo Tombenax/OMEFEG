@@ -3,6 +3,11 @@ functions_cache = {}
 import ast
 import inspect
 import textwrap
+import threading
+
+# Chunk generation now runs on worker threads; the remaining @cache users
+# (generate_tree, square_range, ...) share this dict, so guard it.
+_CACHE_LOCK = threading.Lock()
 
 
 def classify_returns(func):
@@ -45,14 +50,18 @@ def cache(func):
 
         if should:
 
-            if a := functions_cache.get((func, str(args), str(kwargs))):
-                return a
+            key = (func, str(args), str(kwargs))
+
+            with _CACHE_LOCK:
+                if key in functions_cache:
+                    return functions_cache[key]
 
 
 
             result = func(*args, **kwargs)
 
-            functions_cache[(func, str(args), str(kwargs))] = result
+            with _CACHE_LOCK:
+                functions_cache[key] = result
 
             return result
 

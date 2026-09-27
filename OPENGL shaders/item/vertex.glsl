@@ -25,7 +25,9 @@ void main() {
     gl_Position = projection * view * worldPos;
 
     v_fragPos = worldPos.xyz;
-    v_normal = mat3(transpose(inverse(instance_model))) * in_normal;
+    // Rotation/translation-only instances: mat3 is the correct normal
+    // matrix without a per-vertex inverse.
+    v_normal = mat3(instance_model) * in_normal;
 
     // Number of 64x64 textures across the atlas
     int columns = int(ATLAS_W / TEXTURE_W);

@@ -49,6 +49,11 @@ ITEMS_X, ITEMS_Y = ITEMS_W // ITEM_W, ITEMS_H // ITEM_H
 ITEMS_COUNT = (ITEMS_W / ITEM_W) * (ITEMS_H / ITEM_H)
 
 
+# Blocks that filter light instead of blocking it (leaf canopies give
+# dappled shade, water tints instead of full shadow). Encoded as 127 in
+# the occupancy volume (solid = 255); the shaders turn each filter voxel
+# into 0.5x transmittance. Names match Block.block in allBlocks.py.
+LIGHT_FILTER_BLOCKS = frozenset({"birch_leave", "oak_leave", "water"})
 
 
 class Render:
@@ -112,6 +117,7 @@ class Render:
 
     def init_programs(self):
         self.blocks_program["atlasArray"] = 0
+        self.blocks_program["blockOccupancy"] = 3
         self.blocks_program["projection"].write(self.PROJECTION)
         self.blocks_program["frame"] = 0
         self.blocks_program["chance"] = -1
@@ -119,6 +125,14 @@ class Render:
         self.blocks_program["TEXTURE_H"] = TEXTURE_H
         self.blocks_program["ATLAS_W"] = ATLAS_W
         self.blocks_program["ATLAS_H"] = ATLAS_H
+        # worldMin is the minimum *corner* of the occupancy volume.
+        # Blocks are centered cubes (block.obj spans +/-0.5), so the
+        # voxel for block P covers [P-0.5, P+0.5] and the volume corner
+        # is minimum - 0.5. See update_block_occupancy and the shadow
+        # code in the blocks/chunk fragment shaders.
+        self.blocks_program["worldMin"].value = (-0.5, -0.5, -0.5)
+        self.blocks_program["worldSize"].value = (1, 1, 1)
+        self._upload_lights()
 
         self.text_program["atlasArray"] = 1
         self.text_program["projection"].write(self.PROJECTION)
@@ -139,7 +153,10 @@ class Render:
         self.item_program["ATLAS_H"] = ITEMS_H
 
         self.chunk_program["atlasArray"] = 0
+        self.chunk_program["blockOccupancy"] = 3
         self.chunk_program["projection"].write(self.PROJECTION)
+        self.chunk_program["worldMin"].value = (-0.5, -0.5, -0.5)
+        self.chunk_program["worldSize"].value = (1, 1, 1)
 
         self.HUDText_program["atlasArray"] = 1
         self.HUDText_program["screenSize"].value = (WIDTH, HEIGHT)
@@ -165,6 +182,20 @@ class Render:
         glfw.set_window_icon(self.window, 1, [(width, height, pixels)])
 
         self.ctx = moderngl.create_context()
+
+        self.block_occupancy = self.ctx.texture3d((1, 1, 1), 1, b"\x00")
+        self.block_occupancy.filter = (moderngl.NEAREST, moderngl.NEAREST)
+        self.block_occupancy.use(location=3)
+        self._occupancy_size = (1, 1, 1)
+        # Incremental occupancy state (see update_block_occupancy):
+        # persistent CPU volume + per-chunk stamp tracking, so steady
+        # walking only touches new chunks instead of rescanning the world.
+        self._occ_data = None
+        self._occ_min = None  # np int32[3], block coords of volume corner
+        self._occ_stamped = set()  # chunk keys already in the volume
+        self._occ_chunk_bounds = {}  # chunk key -> (cmin, cmax) int tuples
+        self.light_positions = [(9, 50, 9)]
+        self.light_colors = [(1, 1, 1, 1)]
 
         self.ctx.enable(moderngl.DEPTH_TEST)
         self.ctx.enable(moderngl.BLEND)
@@ -237,7 +268,6 @@ class Render:
 
     def update_programs(self):
         self.blocks_program["view"].write(self.CAMERA.view.astype("f4").tobytes())
-        self.blocks_program["lightPos"].value = (9, 50, 9)
         self.blocks_program["viewPos"].write(self.CAMERA.position.astype("f4").tobytes())
 
         self.text_program["view"].write(self.CAMERA.view.astype("f4").tobytes())
@@ -245,13 +275,238 @@ class Render:
         self.text_program["viewPos"].write(self.CAMERA.position.astype("f4").tobytes())
 
         self.chunk_program["view"].write(self.CAMERA.view.astype("f4").tobytes())
-        self.chunk_program["lightPos"].value = (9, 50, 9)
         self.chunk_program["viewPos"].write(self.CAMERA.position.astype("f4").tobytes())
 
         self.item_program["view"].write(self.CAMERA.view.astype("f4").tobytes())
         self.item_program["lightPos"].value = (9, 50, 9)
         self.item_program["viewPos"].write(self.CAMERA.position.astype("f4").tobytes())
 
+    def set_lights(self, positions, colors):
+        if len(positions) != len(colors):
+            raise ValueError("positions and colors must have the same length")
+        if len(positions) > 16:
+            raise ValueError("A maximum of 16 lights is supported")
+        self.light_positions = [tuple(position) for position in positions]
+        self.light_colors = [tuple(color) for color in colors]
+        self._upload_lights()
+
+    def _upload_lights(self):
+        self.blocks_program["lightCount"].value = len(self.light_positions)
+        positions = np.zeros((16, 3), dtype="f4")
+        colors = np.zeros((16, 4), dtype="f4")
+        positions[:len(self.light_positions)] = self.light_positions
+        colors[:len(self.light_colors)] = self.light_colors
+        self.blocks_program["lightPositions"].write(positions.tobytes())
+        self.blocks_program["lightColors"].write(colors.tobytes())
+        self.chunk_program["lightCount"].value = len(self.light_positions)
+        self.chunk_program["lightPositions"].write(positions.tobytes())
+        self.chunk_program["lightColors"].write(colors.tobytes())
+
+    # Padding for the occupancy volume: walking straight grows bounds
+    # ~10 blocks per new chunk row. XZ padding absorbs ~6 rows so steady
+    # walking stamps + uploads instead of reallocating; Y varies little
+    # (terrain height band), so it gets a smaller pad to save VRAM.
+    _OCC_PAD_XZ = 64
+    _OCC_PAD_Y = 16
+
+    @staticmethod
+    def _occ_chunk_bounds_of(chunk):
+        occ = chunk.blocks.occupied
+        if not occ:
+            cx, _, cz = chunk.position
+            return (cx, 0, cz), (cx + 9, 0, cz + 9)
+        arr = np.asarray(list(occ), dtype=np.int32)
+        return tuple(map(int, arr.min(axis=0))), tuple(map(int, arr.max(axis=0)))
+
+    def _occ_stamp_chunk(self, chunk):
+        """Write one chunk's voxels into the persistent CPU volume."""
+        base = self._occ_min
+        data = self._occ_data
+        bx, by, bz = int(base[0]), int(base[1]), int(base[2])
+        for x, y, z in chunk.blocks.occupied:
+            data[z - bz, y - by, x - bx] = 255
+        for block in chunk.blocks.blocks_list:
+            if getattr(block, "block", "") in LIGHT_FILTER_BLOCKS:
+                p = block.position
+                data[p[2] - bz, p[1] - by, p[0] - bx] = 127
+
+    def _occ_upload_new_volume(self, minimum, size, data):
+        new_size = tuple(map(int, size))
+        self.block_occupancy.release()
+        self.block_occupancy = self.ctx.texture3d(new_size, 1, data.tobytes())
+        self.block_occupancy.filter = (moderngl.NEAREST, moderngl.NEAREST)
+        self.block_occupancy.use(location=3)
+        self._occupancy_size = new_size
+        # Blocks are centered cubes spanning [P-0.5, P+0.5] (see
+        # assets/models/block.obj), so the occupancy volume corner is
+        # minimum - 0.5. The shaders compute cell = floor(pos - worldMin),
+        # which then maps block P to texel P - minimum as stored above.
+        world_min_corner = minimum.astype("f4") - 0.5
+        self.blocks_program["blockOccupancy"] = 3
+        self.blocks_program["worldMin"].value = tuple(map(float, world_min_corner))
+        self.blocks_program["worldSize"].value = tuple(map(int, size))
+        self.chunk_program["blockOccupancy"] = 3
+        self.chunk_program["worldMin"].value = tuple(map(float, world_min_corner))
+        self.chunk_program["worldSize"].value = tuple(map(int, size))
+
+    def _occ_grow_and_blit(self, need_min, need_max):
+        """Enlarge the volume to fit need_min/need_max, reusing voxels.
+
+        Pads only the side(s) that actually grew (no drift), blits the
+        old volume into the new one, and reallocates once. No chunk
+        rescan: every stamped voxel stays valid, only its offset changes.
+        """
+        old_min = [int(v) for v in self._occ_min]
+        old_shape = self._occ_data.shape  # (dz, dy, dx); axis a has dim shape[2-a]
+        old_max = [old_min[a] + old_shape[2 - a] - 1 for a in range(3)]
+        alloc_min, alloc_max = list(old_min), list(old_max)
+        for a in range(3):
+            pad = self._OCC_PAD_Y if a == 1 else self._OCC_PAD_XZ
+            if need_min[a] < old_min[a]:
+                alloc_min[a] = need_min[a] - pad
+            if need_max[a] > old_max[a]:
+                alloc_max[a] = need_max[a] + pad
+        new_size = tuple(alloc_max[a] - alloc_min[a] + 1 for a in range(3))
+        data = np.zeros((new_size[2], new_size[1], new_size[0]), dtype=np.uint8)
+        # Blit overlap: old voxel (x,y,z) -> new index (v - alloc_min).
+        off = [old_min[a] - alloc_min[a] for a in range(3)]
+        oz, oy, ox = off[2], off[1], off[0]
+        dz, dy, dx = old_shape
+        data[oz:oz + dz, oy:oy + dy, ox:ox + dx] = self._occ_data
+        minimum = np.asarray(alloc_min, dtype=np.int32)
+        size = np.asarray(new_size, dtype=np.int32)
+        self._occ_data = data
+        self._occ_min = minimum
+        self._occ_upload_new_volume(minimum, size, data)
+
+    def _occ_full_rebuild(self, world, keys_now):
+        occupied = set()
+        light_filter = set()
+        for chunk in world.chunks.blocks_list:
+            occupied.update(chunk.blocks.occupied)
+            for block in chunk.blocks.blocks_list:
+                if getattr(block, "block", "") in LIGHT_FILTER_BLOCKS:
+                    light_filter.add(tuple(block.position))
+
+        if occupied:
+            minimum = np.min(np.asarray(list(occupied), dtype="i4"), axis=0)
+            maximum = np.max(np.asarray(list(occupied), dtype="i4"), axis=0)
+            size = maximum - minimum + 1
+        else:
+            minimum = np.zeros(3, dtype="i4")
+            size = np.ones(3, dtype="i4")
+
+        data = np.zeros((int(size[2]), int(size[1]), int(size[0])), dtype=np.uint8)
+        for x, y, z in occupied:
+            data[z - minimum[2], y - minimum[1], x - minimum[0]] = 255
+        for x, y, z in light_filter:
+            data[z - minimum[2], y - minimum[1], x - minimum[0]] = 127
+
+        self._occ_data = data
+        self._occ_min = np.asarray(minimum, dtype=np.int32)
+        self._occ_stamped = set(keys_now)
+        self._occ_chunk_bounds = {}
+        for chunk in world.chunks.blocks_list:
+            key = tuple(chunk.position)
+            if key in self._occ_stamped:
+                self._occ_chunk_bounds[key] = self._occ_chunk_bounds_of(chunk)
+        self._occ_upload_new_volume(minimum, size, data)
+
+    def refresh_chunk_occupancy(self, chunk):
+        """Re-stamp one edited chunk (place/destroy). Returns True if the
+        volume was updated incrementally, False if the caller should fall
+        back to update_block_occupancy (no volume yet)."""
+        if self._occ_data is None:
+            return False
+        key = tuple(chunk.position)
+        if key not in self._occ_stamped:
+            return False
+        base = self._occ_min
+        data = self._occ_data
+        # Clear the chunk's column footprint, then re-stamp current blocks
+        # (clears voxels of removed blocks; 10x10 columns x full height).
+        ix0 = int(chunk.position[0] - base[0])
+        iz0 = int(chunk.position[2] - base[2])
+        ix1 = ix0 + 10
+        iz1 = iz0 + 10
+        if ix0 < 0 or iz0 < 0 or ix1 > data.shape[2] or iz1 > data.shape[0]:
+            return False
+        data[iz0:iz1, :, ix0:ix1] = 0
+        self._occ_stamp_chunk(chunk)
+        try:
+            self.block_occupancy.write(data.tobytes())
+            self.block_occupancy.use(location=3)
+        except Exception:
+            return False
+        self._occ_chunk_bounds[key] = self._occ_chunk_bounds_of(chunk)
+        return True
+
+    def update_block_occupancy(self, world):
+        keys_now = set(world.chunks.positions_blocks.keys())
+        # Incremental path: stamp only not-yet-stamped chunks when they
+        # fit the current volume, then a single upload. This is the
+        # steady-walking case: O(new blocks) instead of O(world).
+        if self._occ_data is not None:
+            if keys_now >= self._occ_stamped:
+                new_keys = keys_now - self._occ_stamped
+                if not new_keys:
+                    return
+                bounds = world.chunks.positions_blocks
+                need_min = None
+                need_max = None
+                new_bounds = {}
+                for key in new_keys:
+                    chunk = bounds.get(key)
+                    if chunk is None:
+                        continue
+                    cmin, cmax = self._occ_chunk_bounds_of(chunk)
+                    new_bounds[key] = (cmin, cmax)
+                    if need_min is None:
+                        need_min = list(cmin)
+                        need_max = list(cmax)
+                    else:
+                        for a in range(3):
+                            if cmin[a] < need_min[a]:
+                                need_min[a] = cmin[a]
+                            if cmax[a] > need_max[a]:
+                                need_max[a] = cmax[a]
+                base = self._occ_min
+                shape = self._occ_data.shape  # (dz, dy, dx)
+                fits = True
+                if need_min is not None:
+                    for a in range(3):
+                        lo = need_min[a] - int(base[a])
+                        hi = need_max[a] - int(base[a])
+                        dim = shape[2 - a]
+                        if lo < 0 or hi >= dim:
+                            fits = False
+                            break
+                if not fits and need_min is not None:
+                    # Outgrew the volume: enlarge (padding only the grown
+                    # side), reusing every stamped voxel via blit - no
+                    # world rescan. Afterwards the new chunks fit.
+                    self._occ_grow_and_blit(need_min, need_max)
+                if need_min is not None:
+                    for key in new_keys:
+                        chunk = bounds.get(key)
+                        if chunk is None:
+                            continue
+                        self._occ_stamp_chunk(chunk)
+                    try:
+                        self.block_occupancy.write(self._occ_data.tobytes())
+                        self.block_occupancy.use(location=3)
+                    except Exception:
+                        self._occ_full_rebuild(world, keys_now)
+                        return
+                    self._occ_stamped.update(new_keys)
+                    self._occ_chunk_bounds.update(new_bounds)
+                    return
+                return
+            # Chunks were removed (or volume predates them): full rebuild
+            # to drop stale voxels.
+            self._occ_full_rebuild(world, keys_now)
+            return
+        self._occ_full_rebuild(world, keys_now)
 
     def update(self):
         last = time.time()
@@ -417,6 +672,17 @@ class Model:
             indices: model's indices
             !ONlY USED BY CHUNK DUMMIES! is_chunk_dummy
         """
+        old = self.instanedmodels.get(identifier)
+        if old is not None:
+            # The replaced model's GPU objects would otherwise leak: chunk
+            # dummy rebuilds replace this model on every block edit (and
+            # every frame while the player is inside the chunk).
+            for resource in ("vao", "vbo", "ibo", "instance_buffer",
+                             "layer_buffer"):
+                try:
+                    getattr(old, resource).release()
+                except Exception:
+                    pass
         self.instanedmodels[identifier] = InstancedModel(
             render=self.renderer,
             indices = kwargs["indices"],
@@ -1079,7 +1345,6 @@ if __name__ == "__main__":
         render.camera.update(set())
 
         render.blocks_program["view"].write(render.camera.view.astype("f4").tobytes())
-        render.blocks_program["lightPos"].value = (0, 0, 0)
         render.blocks_program["viewPos"].write(render.camera.position.astype('f4').tobytes())
 
         render.text_program["view"].write(render.camera.view.astype("f4").tobytes())

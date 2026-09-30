@@ -1201,25 +1201,56 @@ class InstancedText(InstancedModel):
         # Desktop writes GPU buffers here; we rebuild the merged mesh.
         self._upload()
 
+    def _rendered_length(self, text):
+        """Number of glyphs actually drawn (unknown chars are skipped)."""
+        return sum(1 for c in text.upper() if c in self.charset_lookup)
+
+    def _center_offset(self, entry):
+        """Half-width shift so a centered entry sits on its position.
+
+        Returns 0 for left-aligned (centered=False) entries.
+        """
+        if not entry.get("centered", True):
+            return 0.0
+        return self._rendered_length(entry["text"]) / 2.0
+
     def _rebuild_text_instances(self):
         instances = []
         textures = []
 
         for entry in self._text_entries:
             text, position = entry["text"], entry["position"]
-            for character_index, character in enumerate(text.upper()):
+            # Autocenter: the anchor position is the middle of the drawn
+            # glyphs, not the first glyph. Glyphs advance 1 unit along z.
+            # Unknown chars are skipped (desktop parity; used to KeyError).
+            start = position[2] - self._center_offset(entry)
+            drawn = 0
+            for character in text.upper():
+                tex = self.charset_lookup.get(character)
+                if tex is None:
+                    continue
                 model = np.eye(4, dtype="f4")
                 model[3, 0] = position[0]
                 model[3, 1] = position[1]
-                model[3, 2] = position[2] + character_index
+                model[3, 2] = start + drawn
                 instances.append(model)
-                textures.append(self.charset_lookup[character])
+                textures.append(tex)
+                drawn += 1
 
         self.instances = np.asarray(instances, dtype="f4").reshape((-1, 4, 4))
         self.tex_insta = np.asarray(textures, dtype="f4")
         self._upload_text_instances()
 
-    def add_texts(self, texts, positions, identifiers=None):
+    @staticmethod
+    def _normalize_centered(centered, count):
+        if isinstance(centered, bool):
+            return [centered] * count
+        flags = list(centered)
+        if len(flags) != count:
+            raise ValueError("centered must match the number of texts")
+        return [bool(f) for f in flags]
+
+    def add_texts(self, texts, positions, identifiers=None, centered=True):
         if len(texts) != len(positions):
             raise ValueError("texts and positions must have the same length")
 
@@ -1228,7 +1259,9 @@ class InstancedText(InstancedModel):
         elif len(identifiers) != len(texts):
             raise ValueError("identifiers must match the number of texts")
 
-        for text, position, identifier in zip(texts, positions, identifiers):
+        centered_flags = self._normalize_centered(centered, len(texts))
+
+        for text, position, identifier, center in zip(texts, positions, identifiers, centered_flags):
             if len(position) != 3:
                 raise ValueError("text positions must be [x, y, z]")
             if identifier is not None and identifier in self.texts:
@@ -1238,6 +1271,7 @@ class InstancedText(InstancedModel):
                 "text": text,
                 "position": list(position),
                 "identifier": identifier,
+                "centered": center,
             }
             self._text_entries.append(entry)
             if identifier is not None:
@@ -1245,7 +1279,7 @@ class InstancedText(InstancedModel):
 
         self._rebuild_text_instances()
 
-    def update_text(self, identifier: str, text=None, position=None):
+    def update_text(self, identifier: str, text=None, position=None, centered=None):
         if identifier not in self.texts:
             raise KeyError(f"unknown text identifier: {identifier}")
 
@@ -1256,6 +1290,8 @@ class InstancedText(InstancedModel):
             if len(position) != 3:
                 raise ValueError("text positions must be [x, y, z]")
             entry["position"] = list(position)
+        if centered is not None:
+            entry["centered"] = bool(centered)
 
         self._rebuild_text_instances()
 
@@ -1374,18 +1410,25 @@ class HUDText(InstancedText):
         tiles_y = max(int(atlas_h // tile_h), 1)
         for entry in self._text_entries:
             text, position = entry["text"], entry["position"]
-            for character_index, character in enumerate(text.upper()):
-                # upright 2D mapping: tile row counted from the bottom.
-                layer = int(self.charset_lookup[character])
+            # Autocenter (desktop parity): glyph 0 starts half the drawn
+            # length left of the anchor instead of at it. Unknown chars
+            # are skipped instead of raising KeyError.
+            start = -self._center_offset(entry)
+            drawn = 0
+            for character in text.upper():
+                layer = self.charset_lookup.get(character)
+                if layer is None:
+                    continue
+                layer = int(layer)
                 column = layer % columns
                 row_bottom = tiles_y - 1 - (layer // columns)
                 base = len(verts) // 8
                 for qx, qy, qu, qv in corners:
-                    # x grows with the character index, y is the entry
+                    # x grows with the drawn glyph index, y is the entry
                     # position (both in pixels, origin top-left).
                     x_px = (
                         position[0]
-                        + character_index * tile_w
+                        + (start + drawn) * tile_w
                         + qx * tile_w
                     )
                     y_px = position[1] + qy * tile_h
@@ -1401,6 +1444,7 @@ class HUDText(InstancedText):
                 inds.extend(
                     [base, base + 1, base + 2, base + 3, base + 4, base + 5]
                 )
+                drawn += 1
 
         if verts:
             self.vertices_all = np.asarray(verts, dtype=np.float32).reshape(-1, 8)
@@ -1414,7 +1458,7 @@ class HUDText(InstancedText):
     def _upload_text_instances(self):
         self._rebuild_hud()
 
-    def add_texts(self, texts, positions, identifiers=None):
+    def add_texts(self, texts, positions, identifiers=None, centered=True):
         hud_positions = []
         for position in positions:
             if len(position) != 2:
@@ -1423,9 +1467,9 @@ class HUDText(InstancedText):
                 )
             hud_positions.append([position[0], position[1], 0])
 
-        super().add_texts(texts, hud_positions, identifiers)
+        super().add_texts(texts, hud_positions, identifiers, centered=centered)
 
-    def update_text(self, identifier: str, text=None, position=None):
+    def update_text(self, identifier: str, text=None, position=None, centered=None):
         hud_position = None
         if position is not None:
             if len(position) != 2:
@@ -1434,7 +1478,7 @@ class HUDText(InstancedText):
                 )
             hud_position = [position[0], position[1], 0]
 
-        super().update_text(identifier, text, hud_position)
+        super().update_text(identifier, text, hud_position, centered=centered)
 
     def render(self):
         if self._hud_built_for != self._screen_size():
@@ -1755,10 +1799,16 @@ class Render:
         dtype="f4",
     )
 
-    def __init__(self, init_function: Callable, update_function: Callable):
+    def __init__(self, init_function: Callable, update_function: Callable,
+                 graphics_settings: dict | None = None):
         global _ACTIVE_RENDER
         self.init_function = init_function
         self.update_function = update_function
+        # Reference to the dict in OMEFEG.py (same object, not a copy),
+        # so flipping graphics_settings["shadows"] takes effect live.
+        if graphics_settings is None:
+            graphics_settings = {"shadows": False}
+        self.graphics_settings = graphics_settings
 
         # render.window is passed to get_key() by Camera; keep it self.
         self.window = self
@@ -1915,6 +1965,11 @@ class Render:
         # Single-chunk refresh for place/destroy (see desktop Render).
         # Nothing is uploaded on mobile; keep the compat set consistent
         # without rescanning the world.
+        # Shadows off (graphics_settings["shadows"] in OMEFEG.py): the
+        # mobile shaders are plain lit (no shadow maps), so skip the
+        # compat bookkeeping entirely.
+        if not self.graphics_settings.get("shadows", False):
+            return False
         try:
             occ = getattr(self, "_occupied", None)
             if occ is None:
@@ -1934,6 +1989,12 @@ class Render:
         # nothing to upload; just record the set for API compatibility
         # with World.py / OMEFEG.py (which call this on the desktop build).
         # Incremental: union only chunks not seen before (O(new blocks)).
+        # Evicted chunks are dropped (full rebuild) so the set doesn't
+        # grow forever now that only square(RENDER_DISTANCE+1) is in RAM.
+        # Shadows off (graphics_settings["shadows"] in OMEFEG.py): skip,
+        # the mobile shaders render plain lit with no shadow maps.
+        if not self.graphics_settings.get("shadows", False):
+            return
         try:
             occ = getattr(self, "_occupied", None)
             stamped = getattr(self, "_occ_stamped", None)
@@ -1942,6 +2003,18 @@ class Render:
                 self._occ_stamped = set()
                 occ = self._occupied
                 stamped = self._occ_stamped
+            try:
+                keys_now = set(world.chunks.positions_blocks.keys())
+            except Exception:
+                keys_now = set(tuple(c.position) for c in world.chunks.blocks_list)
+            if not keys_now >= stamped:
+                # Chunks were evicted: rebuild from the RAM survivors.
+                occ = set()
+                for chunk in world.chunks.blocks_list:
+                    occ.update(chunk.blocks.occupied)
+                self._occupied = occ
+                self._occ_stamped = set(keys_now)
+                return
             for chunk in world.chunks.blocks_list:
                 key = tuple(chunk.position)
                 if key not in stamped:

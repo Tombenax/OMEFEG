@@ -54,7 +54,7 @@ class Sand(Block):
     def __init__(self, position: list[float | int]):
         super().__init__("sand", position, SAND, {0:None}, True)
 
-MAX_WATER_LENGHT = float("inf")
+MAX_WATER_LENGHT = 5
 
 class Water(Block):
     def __init__(self, position: list[float | int], source:bool=True, lenght:int=MAX_WATER_LENGHT):

@@ -1,0 +1,18 @@
+{
+    "elements": [
+        {
+        "text": "Enter the server IP address",
+        "pos": [640, 108]
+        },
+        {
+        "id": "address",
+        "text": "",
+        "pos": [640, 187.2]
+        },
+        {
+        "text": "Done",
+        "pos": [640, 406.8],
+        "callback": "done"
+        }
+    ]
+}

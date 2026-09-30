@@ -103,8 +103,32 @@ class Render:
     def set_window_pos(self, x, y):
         glfw.set_window_pos(self.window, x, y)
 
+    def set_window_should_close(self, value):
+        glfw.set_window_should_close(self.window, value)
+
     def get_window_pos(self):
         return glfw.get_window_pos(self.window)
+
+    def get_cursor_pos(self):
+        return glfw.get_cursor_pos(self.window)
+
+    def get_window_size(self):
+        return glfw.get_window_size(self.window)
+
+    def window_should_close(self):
+        return glfw.window_should_close(self.window)
+
+    def poll_events(self):
+        glfw.poll_events()
+
+    def swap_buffers(self):
+        glfw.swap_buffers(self.window)
+
+    def request_text_buffer(self):
+        return self.text_buffer
+
+    def set_text_buffer(self, value:str):
+        self.text_buffer = value
 
     def resized(self, width, height):
         global PROJECTION, WIDTH, HEIGHT
@@ -132,6 +156,12 @@ class Render:
         # code in the blocks/chunk fragment shaders.
         self.blocks_program["worldMin"].value = (-0.5, -0.5, -0.5)
         self.blocks_program["worldSize"].value = (1, 1, 1)
+        # Shadow master switch (see graphics_settings in OMEFEG.py):
+        # 1 = shadow/sky raymarch active, 0 = plain lit (uniform is also
+        # re-synced every frame in update_programs for live toggling).
+        self.blocks_program["shadowsEnabled"].value = (
+            1 if self.graphics_settings.get("shadows", False) else 0
+        )
         self._upload_lights()
 
         self.text_program["atlasArray"] = 1
@@ -157,6 +187,9 @@ class Render:
         self.chunk_program["projection"].write(self.PROJECTION)
         self.chunk_program["worldMin"].value = (-0.5, -0.5, -0.5)
         self.chunk_program["worldSize"].value = (1, 1, 1)
+        self.chunk_program["shadowsEnabled"].value = (
+            1 if self.graphics_settings.get("shadows", False) else 0
+        )
 
         self.HUDText_program["atlasArray"] = 1
         self.HUDText_program["screenSize"].value = (WIDTH, HEIGHT)
@@ -165,15 +198,41 @@ class Render:
         self.HUDText_program["ATLAS_W"] = CHAR_W
         self.HUDText_program["ATLAS_H"] = CHAR_H
 
-    def __init__(self, init_function:Callable, update_function:Callable):
+    def char_callback(self, window, char):        
+        self.text_buffer += chr(char)
+
+    def key_callback(self, window, key, arg1, pressed, arg3):
+
+        if pressed == 0:
+            return
+
+        if key == glfw.KEY_ENTER:
+            self.text_buffer += "\n"
+
+        elif key == glfw.KEY_BACKSPACE:
+            self.text_buffer = self.text_buffer[:-1]
+
+    def __init__(self, init_function:Callable, update_function:Callable, graphics_settings:dict | None = None):
         self.init_function = init_function
         self.update_function = update_function
+        # Reference to the dict in OMEFEG.py (same object, not a copy),
+        # so flipping graphics_settings["shadows"] takes effect live.
+        # Standalone use (Render.__main__ test) falls back to off.
+        if graphics_settings is None:
+            graphics_settings = {"shadows": False}
+        self.graphics_settings = graphics_settings
+
+        self.text_buffer = ""
 
         self.window = glfw.create_window(WIDTH, HEIGHT, "OMEFEG", None, None)
 
         glfw.make_context_current(self.window)
 
         glfw.set_input_mode(self.window, glfw.CURSOR, glfw.CURSOR_DISABLED)
+
+        glfw.set_char_callback(self.window, self.char_callback)
+
+        glfw.set_key_callback(self.window, self.key_callback)
 
         icon = Image.open("assets/icon.png").convert("RGBA")
         width, height = icon.size
@@ -267,6 +326,11 @@ class Render:
                 ]
 
     def update_programs(self):
+        # Re-sync the shadow switch every frame so flipping
+        # graphics_settings["shadows"] in OMEFEG.py toggles live.
+        _shadows = 1 if self.graphics_settings.get("shadows", False) else 0
+        self.blocks_program["shadowsEnabled"].value = _shadows
+        self.chunk_program["shadowsEnabled"].value = _shadows
         self.blocks_program["view"].write(self.CAMERA.view.astype("f4").tobytes())
         self.blocks_program["viewPos"].write(self.CAMERA.position.astype("f4").tobytes())
 
@@ -416,6 +480,10 @@ class Render:
         """Re-stamp one edited chunk (place/destroy). Returns True if the
         volume was updated incrementally, False if the caller should fall
         back to update_block_occupancy (no volume yet)."""
+        # Shadows off (graphics_settings["shadows"] in OMEFEG.py): no
+        # occupancy volume is maintained, so there is nothing to refresh.
+        if not self.graphics_settings.get("shadows", False):
+            return False
         if self._occ_data is None:
             return False
         key = tuple(chunk.position)
@@ -442,6 +510,13 @@ class Render:
         return True
 
     def update_block_occupancy(self, world):
+        # Shadows off (graphics_settings["shadows"] in OMEFEG.py): skip
+        # the whole occupancy build/stamp/upload path. The shaders then
+        # render plain lit (shadowsEnabled == 0), and every World.py call
+        # site that funnels through here becomes a cheap no-op. Volume
+        # state is left intact so re-enabling resumes without a rebuild.
+        if not self.graphics_settings.get("shadows", False):
+            return
         keys_now = set(world.chunks.positions_blocks.keys())
         # Incremental path: stamp only not-yet-stamped chunks when they
         # fit the current volume, then a single upload. This is the
@@ -514,6 +589,8 @@ class Render:
             now = time.time()
             self.dt = now-last
             last = now
+
+            self.ctx.clear()
 
             glfw.poll_events()
 
@@ -978,7 +1055,7 @@ def load_obj(file_path:str):
 
 CUBE_MODEL_INFO = load_obj("assets/models/block.obj")
 
-CHARSET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890:!? "
+CHARSET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890:!? ."
 
 class InstancedText:
     def __init__(self, **kwargs):
@@ -1062,25 +1139,58 @@ class InstancedText:
         if layer_bytes:
             self.layer_buffer.write(layer_bytes)
 
+    def _rendered_length(self, text):
+        """Number of glyphs actually drawn (unknown chars are skipped)."""
+        return sum(1 for c in text.upper() if c in self.charset_lookup)
+
+    def _center_offset(self, entry):
+        """Half-width shift so a centered entry sits on its position.
+
+        Returns 0 for left-aligned (centered=False) entries.
+        """
+        if not entry.get("centered", True):
+            return 0.0
+        return self._rendered_length(entry["text"]) / 2.0
+
     def _rebuild_text_instances(self):
         instances = []
         textures = []
 
         for entry in self._text_entries:
             text, position = entry["text"], entry["position"]
-            for character_index, character in enumerate(text.upper()):
+            # Autocenter: the anchor position is the middle of the drawn
+            # glyphs, not the first glyph. Glyphs advance 1 unit along z.
+            start = position[2] - self._center_offset(entry)
+            drawn = 0
+            for character in text.upper():
+                tex = self.charset_lookup.get(character, None)
+
+                if tex is None:
+                    print("Carachter not found:", character)
+                    continue
+
                 model = np.eye(4, dtype="f4")
                 model[3, 0] = position[0]
                 model[3, 1] = position[1]
-                model[3, 2] = position[2] + character_index
+                model[3, 2] = start + drawn
                 instances.append(model)
-                textures.append(self.charset_lookup[character])
+                textures.append(tex)
+                drawn += 1
 
         self.instances = np.asarray(instances, dtype="f4").reshape((-1, 4, 4))
         self.tex_insta = np.asarray(textures, dtype="f4")
         self._upload_text_instances()
 
-    def add_texts(self, texts, positions, identifiers=None):
+    @staticmethod
+    def _normalize_centered(centered, count):
+        if isinstance(centered, bool):
+            return [centered] * count
+        flags = list(centered)
+        if len(flags) != count:
+            raise ValueError("centered must match the number of texts")
+        return [bool(f) for f in flags]
+
+    def add_texts(self, texts, positions, identifiers=None, centered=True):
         if len(texts) != len(positions):
             raise ValueError("texts and positions must have the same length")
 
@@ -1089,7 +1199,9 @@ class InstancedText:
         elif len(identifiers) != len(texts):
             raise ValueError("identifiers must match the number of texts")
 
-        for text, position, identifier in zip(texts, positions, identifiers):
+        centered_flags = self._normalize_centered(centered, len(texts))
+
+        for text, position, identifier, center in zip(texts, positions, identifiers, centered_flags):
             if len(position) != 3:
                 raise ValueError("text positions must be [x, y, z]")
             if identifier is not None and identifier in self.texts:
@@ -1099,6 +1211,7 @@ class InstancedText:
                 "text": text,
                 "position": list(position),
                 "identifier": identifier,
+                "centered": center,
             }
             self._text_entries.append(entry)
             if identifier is not None:
@@ -1106,7 +1219,7 @@ class InstancedText:
 
         self._rebuild_text_instances()
 
-    def update_text(self, identifier: str, text=None, position=None):
+    def update_text(self, identifier: str, text=None, position=None, centered=None):
         if identifier not in self.texts:
             raise KeyError(f"unknown text identifier: {identifier}")
 
@@ -1117,6 +1230,8 @@ class InstancedText:
             if len(position) != 3:
                 raise ValueError("text positions must be [x, y, z]")
             entry["position"] = list(position)
+        if centered is not None:
+            entry["centered"] = bool(centered)
 
         self._rebuild_text_instances()
 
@@ -1264,25 +1379,78 @@ class HUDText(InstancedText):
         self.program["ATLAS_W"] = kwargs.get("atlas_width", CHAR_W)
         self.program["ATLAS_H"] = kwargs.get("atlas_height", CHAR_H)
 
-    def add_texts(self, texts, positions, identifiers=None):
+        self._render = kwargs["render"]
+        self.callbacks = {}
+        self._mouse_was_pressed = False
+
+    def add_texts(self, texts, positions, identifiers=None, callbacks=None, centered=True):
+        if callbacks is None:
+            callbacks = [None] * len(texts)
+        elif len(callbacks) != len(texts):
+            raise ValueError("callbacks must match the number of texts")
+
         hud_positions = []
         for position in positions:
             if len(position) != 2:
                 raise ValueError("HUD text positions must be [x, y] pixel coordinates")
             hud_positions.append([position[0], position[1], 0])
 
-        super().add_texts(texts, hud_positions, identifiers)
+        super().add_texts(texts, hud_positions, identifiers, centered=centered)
+        added_entries = self._text_entries[-len(texts):] if texts else []
+        for entry, callback in zip(added_entries, callbacks):
+            entry["callback"] = callback
+            if entry["identifier"] is not None and callback is not None:
+                self.callbacks[entry["identifier"]] = callback
 
-    def update_text(self, identifier: str, text=None, position=None):
+    def update_text(self, identifier: str, text=None, position=None, centered=None):
         hud_position = None
         if position is not None:
             if len(position) != 2:
                 raise ValueError("HUD text positions must be [x, y] pixel coordinates")
             hud_position = [position[0], position[1], 0]
 
-        super().update_text(identifier, text, hud_position)
+        super().update_text(identifier, text, hud_position, centered=centered)
+
+    def remove_text(self, identifier: str):
+        removed = super().remove_text(identifier)
+        if removed:
+            self.callbacks.pop(identifier, None)
+        return removed
+
+    def get_text(self, identifier:str):
+        return super().texts[identifier]
+
+    def _handle_click(self):
+        mouse_pressed = self._render.get_mouse_button(self._render.MOUSE_BUTTON_LEFT) == self._render.PRESS
+        if mouse_pressed and not self._mouse_was_pressed:
+            cursor_x, cursor_y = self._render.get_cursor_pos()
+            window_width, window_height = self._render.get_window_size()
+            if window_width > 0 and window_height > 0:
+                cursor_x *= self.screen_size[0] / window_width
+                cursor_y *= self.screen_size[1] / window_height
+
+                for entry in reversed(self._text_entries):
+                    callback = entry.get("callback")
+                    if callback is None:
+                        continue
+
+                    # Match the drawn glyphs: the HUD shader places glyph i
+                    # at screen x = pos.x + pos.z * W + i * W, and rebuild
+                    # starts glyph 0 at pos.z - offset (offset = half the
+                    # drawn length when centered). The clickable box is that
+                    # same span.
+                    x, y, z = entry["position"]
+                    drawn = self._rendered_length(entry["text"])
+                    box_x = x + z * CHR_W - self._center_offset(entry) * CHR_W
+                    text_width = drawn * CHR_W
+                    if box_x <= cursor_x < box_x + text_width and y <= cursor_y < y + CHR_H:
+                        callback()
+                        break
+
+        self._mouse_was_pressed = mouse_pressed
 
     def render(self):
+        self._handle_click()
         if len(self.instances) == 0:
             return
 

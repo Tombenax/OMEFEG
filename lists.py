@@ -59,10 +59,31 @@ class ChunksList:
         self.positions.append(block.position)
 
     def remove(self, block):
-        self.blocks_list.remove(block)
-        self.blocks_positions.pop(block)
-        self.positions_blocks.pop(tuple(block.position))
-        self.occupied.remove(tuple(block.position))
+        try:
+            self.blocks_list.remove(block)
+        except ValueError:
+            pass
+        self.blocks_positions.pop(block, None)
+        try:
+            key = tuple(block.position)
+        except (TypeError, AttributeError):
+            return False
+        self.positions_blocks.pop(key, None)
+        self.occupied.discard(key)
+        # positions held block.position lists; drop the matching entry so
+        # unloaded chunks don't linger here forever (old code never
+        # removed, leaking one entry per evicted chunk).
+        try:
+            self.positions.remove(block.position)
+        except ValueError:
+            for i, p in enumerate(self.positions):
+                try:
+                    if tuple(p) == key:
+                        del self.positions[i]
+                        break
+                except TypeError:
+                    continue
+        return True
 
     def __getitem__(self, key):
         return self.blocks_list[key]

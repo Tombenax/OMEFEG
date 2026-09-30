@@ -15,6 +15,9 @@ uniform int lightCount;
 uniform vec3 worldMin;
 uniform ivec3 worldSize;
 uniform vec3 viewPos;
+// Master shadow switch from graphics_settings["shadows"] in OMEFEG.py
+// (uploaded by Render.py): 1 = shadow/sky raymarch, 0 = plain lit.
+uniform int shadowsEnabled;
 
 float lightTransmittance(vec3 from, vec3 to)
 {
@@ -142,7 +145,10 @@ void main() {
     // a fully enclosed box still gets 0.35 everywhere (readable, grey).
     // Keep ~30% when occluded: pure 0 made every overhang/tree underside
     // pitch black. Tune 0.3 to taste (0.0 = black holes, 1.0 = no AO).
-    float skyVis = skyVisibility(v_fragPos, norm);
+    float skyVis = 1.0;
+    if (shadowsEnabled == 1) {
+        skyVis = skyVisibility(v_fragPos, norm);
+    }
     vec3 result = 0.35 * color * mix(0.3, 1.0, skyVis);
     vec3 viewDir = normalize(viewPos - v_fragPos);
 
@@ -164,7 +170,10 @@ void main() {
         vec3 reflectDir = reflect(-lightDir, norm);
         float spec = pow(max(dot(viewDir, reflectDir), 0.0), 16.0);
 
-        float visibility = lightVisibility(v_fragPos, norm, lightPositions[i]);
+        float visibility = 1.0;
+        if (shadowsEnabled == 1) {
+            visibility = lightVisibility(v_fragPos, norm, lightPositions[i]);
+        }
         result += (diff * color + spec) * lightColors[i].rgb * attenuation * visibility;
     }
 

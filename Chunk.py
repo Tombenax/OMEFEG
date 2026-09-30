@@ -81,6 +81,36 @@ class Chunk:
         chunk._dummy_dirty = False
         return chunk
 
+    def release(self):
+        """Free GPU resources so an unloaded chunk leaves no GL trace.
+
+        Desktop builds hold moderngl buffers/vaos per InstancedModel;
+        mobile builds hold Kivy canvas objects (detach_gl). Either way
+        the chunk becomes inert and safe to drop from RAM.
+        """
+        try:
+            models = list(getattr(self.model, "instanedmodels", {}).values())
+        except Exception:
+            models = []
+        for m in models:
+            detach = getattr(m, "detach_gl", None)
+            if callable(detach):
+                try:
+                    detach()
+                except Exception:
+                    pass
+            else:
+                for resource in ("vao", "vbo", "ibo",
+                                 "instance_buffer", "layer_buffer"):
+                    try:
+                        getattr(m, resource).release()
+                    except Exception:
+                        pass
+        try:
+            self.model.instanedmodels.clear()
+        except Exception:
+            pass
+
     def mark_dummy_dirty(self):
         self._dummy_dirty = True
 

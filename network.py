@@ -18,6 +18,10 @@ class Network:
         username:str = "UNKNOWN"
 =======
 >>>>>>> d28fd2647dd9c046033457fdeb3d5779d087a5c3
+<<<<<<< HEAD
+        username:str = "UNKNOWN"
+=======
+>>>>>>> d28fd2647dd9c046033457fdeb3d5779d087a5c3
     ):
         self.address = (host, port)
         self.timeout = timeout
@@ -49,7 +53,11 @@ class Network:
 <<<<<<< HEAD
                     "username": username
 =======
+<<<<<<< HEAD
+                    "username": username
+=======
                     "username": "NOONE"
+>>>>>>> d28fd2647dd9c046033457fdeb3d5779d087a5c3
 >>>>>>> d28fd2647dd9c046033457fdeb3d5779d087a5c3
                 })
                 data = self.receive()

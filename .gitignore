@@ -1,4 +1,12 @@
-.tmp.driveupload
-.gitignore
-tst.py
-.tmp.drivedownload
+# Drive / OS junk (directories, not 300 numbered files)
+.tmp.driveupload/
+.tmp.drivedownload/
+# Python bytecode — never commit these, they always conflict
+__pycache__/
+*.pyc
+*.pyo
+# Local run logs
+logs/
+# Android build leftovers
+.Android/
+*.apk

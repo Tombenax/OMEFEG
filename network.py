@@ -14,6 +14,10 @@ class Network:
         host: str = "127.0.0.1",
         port: int = 44699,
         timeout: float = 2.0,
+<<<<<<< HEAD
+        username:str = "UNKNOWN"
+=======
+>>>>>>> d28fd2647dd9c046033457fdeb3d5779d087a5c3
     ):
         self.address = (host, port)
         self.timeout = timeout
@@ -42,7 +46,11 @@ class Network:
             try:
                 self.send({
                     "connect": True,
+<<<<<<< HEAD
+                    "username": username
+=======
                     "username": "NOONE"
+>>>>>>> d28fd2647dd9c046033457fdeb3d5779d087a5c3
                 })
                 data = self.receive()
                 break

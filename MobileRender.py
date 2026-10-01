@@ -1965,11 +1965,14 @@ class Render:
         # Single-chunk refresh for place/destroy (see desktop Render).
         # Nothing is uploaded on mobile; keep the compat set consistent
         # without rescanning the world.
+<<<<<<< HEAD
         # Shadows off (graphics_settings["shadows"] in OMEFEG.py): the
         # mobile shaders are plain lit (no shadow maps), so skip the
         # compat bookkeeping entirely.
         if not self.graphics_settings.get("shadows", False):
             return False
+=======
+>>>>>>> d28fd2647dd9c046033457fdeb3d5779d087a5c3
         try:
             occ = getattr(self, "_occupied", None)
             if occ is None:
@@ -1989,12 +1992,15 @@ class Render:
         # nothing to upload; just record the set for API compatibility
         # with World.py / OMEFEG.py (which call this on the desktop build).
         # Incremental: union only chunks not seen before (O(new blocks)).
+<<<<<<< HEAD
         # Evicted chunks are dropped (full rebuild) so the set doesn't
         # grow forever now that only square(RENDER_DISTANCE+1) is in RAM.
         # Shadows off (graphics_settings["shadows"] in OMEFEG.py): skip,
         # the mobile shaders render plain lit with no shadow maps.
         if not self.graphics_settings.get("shadows", False):
             return
+=======
+>>>>>>> d28fd2647dd9c046033457fdeb3d5779d087a5c3
         try:
             occ = getattr(self, "_occupied", None)
             stamped = getattr(self, "_occ_stamped", None)
@@ -2003,6 +2009,7 @@ class Render:
                 self._occ_stamped = set()
                 occ = self._occupied
                 stamped = self._occ_stamped
+<<<<<<< HEAD
             try:
                 keys_now = set(world.chunks.positions_blocks.keys())
             except Exception:
@@ -2015,6 +2022,8 @@ class Render:
                 self._occupied = occ
                 self._occ_stamped = set(keys_now)
                 return
+=======
+>>>>>>> d28fd2647dd9c046033457fdeb3d5779d087a5c3
             for chunk in world.chunks.blocks_list:
                 key = tuple(chunk.position)
                 if key not in stamped:

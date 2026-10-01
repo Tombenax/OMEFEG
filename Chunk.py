@@ -81,6 +81,7 @@ class Chunk:
         chunk._dummy_dirty = False
         return chunk
 
+<<<<<<< HEAD
     def release(self):
         """Free GPU resources so an unloaded chunk leaves no GL trace.
 
@@ -111,6 +112,8 @@ class Chunk:
         except Exception:
             pass
 
+=======
+>>>>>>> d28fd2647dd9c046033457fdeb3d5779d087a5c3
     def mark_dummy_dirty(self):
         self._dummy_dirty = True
 

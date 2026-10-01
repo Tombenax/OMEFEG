@@ -4,12 +4,6 @@
 tst.py
 .tmp.drivedownload
 =======
-<<<<<<< HEAD
-.tmp.driveupload
-.gitignore
-tst.py
-.tmp.drivedownload
-=======
 .tmp.driveupload/347
 .tmp.driveupload/351
 .tmp.driveupload/355
@@ -366,5 +360,4 @@ tst.py
 .tmp.driveupload/1658
 .tmp.driveupload/1660
 .gitignore
->>>>>>> d28fd2647dd9c046033457fdeb3d5779d087a5c3
 >>>>>>> d28fd2647dd9c046033457fdeb3d5779d087a5c3

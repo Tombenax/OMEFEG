@@ -18,9 +18,7 @@ void main() {
     gl_Position = projection * view * worldPos;
 
     v_fragPos = worldPos.xyz;
-    // Chunk dummies use an identity instance matrix; same cheap path as
-    // the blocks shader (no per-vertex inverse).
-    v_normal = mat3(instance_model) * in_normal;
+    v_normal = mat3(transpose(inverse(instance_model))) * in_normal;
     v_uv = in_uv;
     v_layer = instance_layer;
 }

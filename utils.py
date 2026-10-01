@@ -406,92 +406,6 @@ def string_to_fixed_number(s, digits=10):
     # Limit to a fixed number of digits
     return num % (10 ** digits)
 
-
-import base64
-import getpass
-import json
-import os
-
-try:
-    from argon2.low_level import hash_secret_raw, Type
-    from cryptography.fernet import Fernet
-    _CRYPTO_OK = True
-except Exception as _e:
-    print(f"[utils] argon2/cryptography unavailable, accounts disabled: {_e}")
-    hash_secret_raw = None  # type: ignore
-    Type = None  # type: ignore
-    Fernet = None  # type: ignore
-    _CRYPTO_OK = False
-
-
-FILE = "account.dat"
-
-
-def derive_key(master_password, salt):
-    if not _CRYPTO_OK:
-        raise RuntimeError("account crypto unavailable on this build")
-    key = hash_secret_raw(
-        secret=master_password.encode(),
-        salt=salt,
-        time_cost=3,
-        memory_cost=65536,
-        parallelism=4,
-        hash_len=32,
-        type=Type.ID,
-    )
-
-    return base64.urlsafe_b64encode(key)
-
-
-def create_account(username, password, master):
-    # Random salt for Argon2id
-    salt = os.urandom(16)
-
-    # Derive encryption key from master password
-    key = derive_key(master, salt)
-
-    cipher = Fernet(key)
-
-    data = {
-        "username": username,
-        "password": password
-    }
-
-    # Encrypt the username and password
-    encrypted = cipher.encrypt(
-        json.dumps(data).encode()
-    )
-
-    # Store salt + encrypted data
-    vault = {
-        "salt": base64.b64encode(salt).decode(),
-        "data": encrypted.decode()
-    }
-
-    with open(FILE, "w") as f:
-        json.dump(vault, f)
-
-
-def load_account(master):
-    with open(FILE, "r") as f:
-        vault = json.load(f)
-
-    salt = base64.b64decode(vault["salt"])
-    encrypted = vault["data"].encode()
-
-    key = derive_key(master, salt)
-    cipher = Fernet(key)
-
-    try:
-        decrypted = cipher.decrypt(encrypted)
-    except Exception:
-        print("Wrong master password or corrupted file.")
-        return
-
-    data = json.loads(decrypted.decode())
-
-    return data
-
 from Number import Number
 
 def distance(first:list[Number], second:list[Number]):
@@ -531,6 +445,8 @@ def raycast(occupied, start, front, max_iterations=10):
 from pathlib import Path
 import sys
 
+import os
+
 def _save_dir():
     """Writable save folder on both PC and Android.
 
@@ -565,8 +481,481 @@ def open_save_file(filename:str, callback:Callable):
 
     return callback(readed)
 
+import requests
+import time
+import webbrowser
 
+
+# ============================================================
+# CONFIG
+# ============================================================
+
+GITHUB_CLIENT_ID = "Ov23liEq6lhdqtrbibGf"
+
+OMEFEG_SERVER = (
+    "https://Tombenax.pythonanywhere.com"
+)
+
+
+# ============================================================
+# START GITHUB DEVICE LOGIN
+# ============================================================
+
+def login_with_github():
+
+    # --------------------------------------------------------
+    # STEP 1
+    #
+    # Ask GitHub for a device code.
+    # --------------------------------------------------------
+
+    response = requests.post(
+        "https://github.com/login/device/code",
+
+        data={
+            "client_id":
+                GITHUB_CLIENT_ID,
+
+            # We only need to identify the user.
+            "scope":
+                "read:user user:email"
+        },
+
+        headers={
+            "Accept":
+                "application/json"
+        },
+
+        timeout=10
+    )
+
+
+    if response.status_code != 200:
+
+        print(
+            "Unable to start GitHub login."
+        )
+
+        print(
+            response.text
+        )
+
+        return None
+
+
+    data = response.json()
+
+
+    device_code = data[
+        "device_code"
+    ]
+
+    user_code = data[
+        "user_code"
+    ]
+
+    verification_uri = data[
+        "verification_uri"
+    ]
+
+    expires_in = data[
+        "expires_in"
+    ]
+
+    interval = data.get(
+        "interval",
+        5
+    )
+
+
+    # --------------------------------------------------------
+    # STEP 2
+    #
+    # Tell the player what to do.
+    # --------------------------------------------------------
+
+    print()
+    print(
+        "=============================="
+    )
+    print(
+        "       GITHUB LOGIN"
+    )
+    print(
+        "=============================="
+    )
+
+    print()
+
+    print(
+        "Open:"
+    )
+
+    print(
+        verification_uri
+    )
+
+    print()
+
+    print(
+        "Enter this code:"
+    )
+
+    print()
+
+    notification(
+        "OMEFEG",
+        f"Put in the browser this code: \"{user_code}\""
+    )
+
+    print()
+
+    print(
+        f"You have about "
+        f"{expires_in // 60} minutes."
+    )
+
+    print()
+
+
+    # Open browser automatically.
+    try:
+
+        webbrowser.open(
+            verification_uri
+        )
+
+    except Exception:
+
+        pass
+
+
+    # --------------------------------------------------------
+    # STEP 3
+    #
+    # Poll GitHub until the user authorizes.
+    #
+    # GitHub requires us to respect the interval returned
+    # above. Otherwise GitHub can return slow_down.
+    # --------------------------------------------------------
+
+    start_time = time.time()
+
+    while True:
+
+        # Stop after GitHub's expiration time.
+        if (
+            time.time() - start_time
+            >= expires_in
+        ):
+
+            print(
+                "GitHub login expired."
+            )
+
+            return None
+
+
+        notification(
+            "OMEFEG",
+            f"Put in the browser this code: \"{user_code}\""
+        )
+
+        time.sleep(
+            interval
+        )
+
+
+        token_response = requests.post(
+            "https://github.com/login/oauth/access_token",
+
+            data={
+                "client_id":
+                    GITHUB_CLIENT_ID,
+
+                "device_code":
+                    device_code,
+
+                "grant_type":
+                    "urn:ietf:params:oauth:grant-type:device_code"
+            },
+
+            headers={
+                "Accept":
+                    "application/json"
+            },
+
+            timeout=10
+        )
+
+
+        if token_response.status_code != 200:
+
+            print(
+                "GitHub token request failed."
+            )
+
+            return None
+
+
+        token_data = (
+            token_response.json()
+        )
+
+
+        # ----------------------------------------------------
+        # User hasn't entered the code yet.
+        # ----------------------------------------------------
+
+        if (
+            token_data.get("error")
+            == "authorization_pending"
+        ):
+
+            print(
+                "Waiting for GitHub authorization..."
+            )
+
+            continue
+
+
+        # ----------------------------------------------------
+        # GitHub says we're polling too quickly.
+        # ----------------------------------------------------
+
+        if (
+            token_data.get("error")
+            == "slow_down"
+        ):
+
+            interval += 5
+
+            continue
+
+
+        # ----------------------------------------------------
+        # User rejected the login.
+        # ----------------------------------------------------
+
+        if (
+            token_data.get("error")
+            == "access_denied"
+        ):
+
+            print(
+                "GitHub login was cancelled."
+            )
+
+            return None
+
+
+        # ----------------------------------------------------
+        # Code expired.
+        # ----------------------------------------------------
+
+        if (
+            token_data.get("error")
+            == "expired_token"
+        ):
+
+            print(
+                "GitHub login expired."
+            )
+
+            return None
+
+
+        # ----------------------------------------------------
+        # Something else went wrong.
+        # ----------------------------------------------------
+
+        if "error" in token_data:
+
+            print(
+                "GitHub error:",
+                token_data["error"]
+            )
+
+            return None
+
+
+        # ----------------------------------------------------
+        # SUCCESS
+        # ----------------------------------------------------
+
+        access_token = token_data.get(
+            "access_token"
+        )
+
+
+        if access_token:
+
+            print(
+                "GitHub authorization successful!"
+            )
+
+            break
+
+
+    # --------------------------------------------------------
+    # STEP 4
+    #
+    # Send the GitHub access token to YOUR server.
+    # --------------------------------------------------------
+
+    server_response = requests.post(
+        f"{OMEFEG_SERVER}/api/login/github",
+
+        json={
+            "access_token":
+                access_token
+        },
+
+        timeout=10
+    )
+
+
+    # --------------------------------------------------------
+    # Server didn't accept the login.
+    # --------------------------------------------------------
+
+    if server_response.status_code not in (
+        200,
+        401,
+        404
+    ):
+
+        print(
+            "OMEFEG server error:"
+        )
+
+        print(
+            server_response.text
+        )
+
+        return None
+
+
+    result = server_response.json()
+
+
+    # --------------------------------------------------------
+    # Not registered on OMEFEG.
+    # --------------------------------------------------------
+
+    if (
+        result.get("status")
+        == "not_registered"
+    ):
+
+        print(
+            "This GitHub account is not "
+            "registered with OMEFEG."
+        )
+
+        return None
+
+
+    # --------------------------------------------------------
+    # OMEFEG account disabled.
+    # --------------------------------------------------------
+
+    if (
+        result.get("status")
+        == "disabled"
+    ):
+
+        print(
+            "Your OMEFEG account is disabled."
+        )
+
+        return "disabled"
+
+
+    # --------------------------------------------------------
+    # Invalid GitHub token.
+    # --------------------------------------------------------
+
+    if (
+        result.get("status")
+        == "invalid"
+    ):
+
+        print(
+            "GitHub authentication failed."
+        )
+
+        return None
+
+
+    # --------------------------------------------------------
+    # SUCCESS
+    # --------------------------------------------------------
+
+    if (
+        result.get("status")
+        == "success"
+    ):
+
+        return {
+            "username":
+                result["username"],
+
+            "uuid":
+                result["uuid"],
+
+            "status":
+                result["account_status"],
+
+            # Keep this if your game needs to make
+            # authenticated GitHub API calls later.
+            "github_access_token":
+                access_token
+        }
+
+
+    return None
 
 if __name__ == "__main__":
     #put tests here
-    pass
+    # ============================================================
+    # EXAMPLE
+    # ============================================================
+
+    result = login_with_github()
+
+
+    if result == "disabled":
+
+        print(
+            "ACCESS DENIED: account disabled."
+        )
+
+
+    elif result is None:
+
+        print(
+            "LOGIN FAILED."
+        )
+
+
+    else:
+
+        print(
+            "Logged in!"
+        )
+
+        print(
+            "Username:",
+            result["username"]
+        )
+
+        print(
+            "UUID:",
+            result["uuid"]
+        )
+
+        print(
+            "Status:",
+            result["status"]
+        )

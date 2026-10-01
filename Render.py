@@ -106,6 +106,27 @@ class Render:
     def get_window_pos(self):
         return glfw.get_window_pos(self.window)
 
+    def get_cursor_pos(self):
+        return glfw.get_cursor_pos(self.window)
+
+    def get_window_size(self):
+        return glfw.get_window_size(self.window)
+
+    def window_should_close(self):
+        return glfw.window_should_close(self.window)
+
+    def poll_events(self):
+        glfw.poll_events()
+
+    def swap_buffers(self):
+        glfw.swap_buffers(self.window)
+
+    def request_text_buffer(self):
+        return self.text_buffer
+
+    def set_text_buffer(self, value:str):
+        self.text_buffer = value
+
     def resized(self, width, height):
         global PROJECTION, WIDTH, HEIGHT
 
@@ -165,15 +186,36 @@ class Render:
         self.HUDText_program["ATLAS_W"] = CHAR_W
         self.HUDText_program["ATLAS_H"] = CHAR_H
 
-    def __init__(self, init_function:Callable, update_function:Callable):
+    def char_callback(self, window, char):        
+        self.text_buffer += chr(char)
+
+    def key_callback(self, window, key, arg1, pressed, arg3):
+
+        if pressed == 0:
+            return
+
+        if key == glfw.KEY_ENTER:
+            self.text_buffer += "\n"
+
+        elif key == glfw.KEY_BACKSPACE:
+            self.text_buffer = self.text_buffer[:-1]
+
+    def __init__(self, init_function:Callable, update_function:Callable, settings=None):
         self.init_function = init_function
         self.update_function = update_function
+        self.settings = settings if settings is not None else {"shaders": True}
+
+        self.text_buffer = ""
 
         self.window = glfw.create_window(WIDTH, HEIGHT, "OMEFEG", None, None)
 
         glfw.make_context_current(self.window)
 
         glfw.set_input_mode(self.window, glfw.CURSOR, glfw.CURSOR_DISABLED)
+
+        glfw.set_char_callback(self.window, self.char_callback)
+
+        glfw.set_key_callback(self.window, self.key_callback)
 
         icon = Image.open("assets/icon.png").convert("RGBA")
         width, height = icon.size
@@ -267,6 +309,12 @@ class Render:
                 ]
 
     def update_programs(self):
+        shaders_enabled = self.settings.get("shaders") is True
+        self.blocks_program["enable_shaders"].value = shaders_enabled
+        self.chunk_program["enable_shaders"].value = shaders_enabled
+        self.text_program["enable_shaders"].value = shaders_enabled
+        self.item_program["enable_shaders"].value = shaders_enabled
+
         self.blocks_program["view"].write(self.CAMERA.view.astype("f4").tobytes())
         self.blocks_program["viewPos"].write(self.CAMERA.position.astype("f4").tobytes())
 
@@ -515,6 +563,8 @@ class Render:
             self.dt = now-last
             last = now
 
+            self.ctx.clear(0, 0, 0)
+
             glfw.poll_events()
 
             self.update_programs()
@@ -655,7 +705,17 @@ class InstancedModel:
         self.layer_buffer.orphan(len(layer_bytes))
         self.layer_buffer.write(layer_bytes)
 
+    def set_visible(self, visible):
+        """Show/hide switch (mobile parity: detaches canvas objects there).
+
+        Desktop redraws from scratch every frame, so this is only state;
+        Menus.activate/deactivate drive it on both builds uniformly.
+        """
+        self._hidden = not bool(visible)
+
     def render(self):
+        if getattr(self, "_hidden", False):
+            return
         if len(self.instances) == 0: return
         self.vao.render(instances=len(self.instances))
 
@@ -978,7 +1038,7 @@ def load_obj(file_path:str):
 
 CUBE_MODEL_INFO = load_obj("assets/models/block.obj")
 
-CHARSET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890:!? "
+CHARSET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890:!? ."
 
 class InstancedText:
     def __init__(self, **kwargs):
@@ -990,7 +1050,8 @@ class InstancedText:
         """
 
         self.ctx = kwargs["render"].ctx
-        self.program = kwargs["render"].text_program if not kwargs.get("is_hud_text") else kwargs["render"].HUDText_program
+        self.is_hud_text = kwargs.get("is_hud_text", False)
+        self.program = kwargs["render"].HUDText_program if self.is_hud_text else kwargs["render"].text_program
         self.charset_lookup = {}
         for idx, key in enumerate(kwargs["charset"]):
             self.charset_lookup[key] = idx
@@ -1068,19 +1129,40 @@ class InstancedText:
 
         for entry in self._text_entries:
             text, position = entry["text"], entry["position"]
+            valid_character_count = sum(character in self.charset_lookup for character in text.upper())
+            # Autocenter: anchor is the middle of the drawn glyphs.
+            # centered=False keeps legacy left-aligned (anchor = first glyph).
+            center_offset = -valid_character_count / 2 if entry.get("centered", True) else 0
+            ya_know = 0
             for character_index, character in enumerate(text.upper()):
+                tex = self.charset_lookup.get(character, None)
+
+                if tex is None:
+                    print("Carachter not found:", character)
+                    ya_know += 1
+                    continue
+
                 model = np.eye(4, dtype="f4")
                 model[3, 0] = position[0]
                 model[3, 1] = position[1]
-                model[3, 2] = position[2] + character_index
+                model[3, 2] = position[2] + center_offset + character_index - ya_know
                 instances.append(model)
-                textures.append(self.charset_lookup[character])
+                textures.append(tex)
 
         self.instances = np.asarray(instances, dtype="f4").reshape((-1, 4, 4))
         self.tex_insta = np.asarray(textures, dtype="f4")
         self._upload_text_instances()
 
-    def add_texts(self, texts, positions, identifiers=None):
+    @staticmethod
+    def _normalize_centered(centered, count):
+        if isinstance(centered, bool):
+            return [centered] * count
+        flags = list(centered)
+        if len(flags) != count:
+            raise ValueError("centered must match the number of texts")
+        return [bool(f) for f in flags]
+
+    def add_texts(self, texts, positions, identifiers=None, centered=True):
         if len(texts) != len(positions):
             raise ValueError("texts and positions must have the same length")
 
@@ -1089,7 +1171,9 @@ class InstancedText:
         elif len(identifiers) != len(texts):
             raise ValueError("identifiers must match the number of texts")
 
-        for text, position, identifier in zip(texts, positions, identifiers):
+        centered_flags = self._normalize_centered(centered, len(texts))
+
+        for text, position, identifier, center in zip(texts, positions, identifiers, centered_flags):
             if len(position) != 3:
                 raise ValueError("text positions must be [x, y, z]")
             if identifier is not None and identifier in self.texts:
@@ -1099,6 +1183,7 @@ class InstancedText:
                 "text": text,
                 "position": list(position),
                 "identifier": identifier,
+                "centered": center,
             }
             self._text_entries.append(entry)
             if identifier is not None:
@@ -1106,7 +1191,7 @@ class InstancedText:
 
         self._rebuild_text_instances()
 
-    def update_text(self, identifier: str, text=None, position=None):
+    def update_text(self, identifier: str, text=None, position=None, centered=None):
         if identifier not in self.texts:
             raise KeyError(f"unknown text identifier: {identifier}")
 
@@ -1117,6 +1202,8 @@ class InstancedText:
             if len(position) != 3:
                 raise ValueError("text positions must be [x, y, z]")
             entry["position"] = list(position)
+        if centered is not None:
+            entry["centered"] = bool(centered)
 
         self._rebuild_text_instances()
 
@@ -1130,7 +1217,13 @@ class InstancedText:
         return True
             
 
+    def set_visible(self, visible):
+        """Show/hide switch (mobile parity, see InstancedModel)."""
+        self._hidden = not bool(visible)
+
     def render(self):
+        if getattr(self, "_hidden", False):
+            return
         if len(self.instances) == 0: return
         self.vao.render(instances=len(self.instances))
 
@@ -1264,25 +1357,82 @@ class HUDText(InstancedText):
         self.program["ATLAS_W"] = kwargs.get("atlas_width", CHAR_W)
         self.program["ATLAS_H"] = kwargs.get("atlas_height", CHAR_H)
 
-    def add_texts(self, texts, positions, identifiers=None):
+        self._render = kwargs["render"]
+        self.callbacks = {}
+        self._mouse_was_pressed = False
+
+    def add_texts(self, texts, positions, identifiers=None, callbacks=None, centered=True):
+        if callbacks is None:
+            callbacks = [None] * len(texts)
+        elif len(callbacks) != len(texts):
+            raise ValueError("callbacks must match the number of texts")
+
         hud_positions = []
         for position in positions:
             if len(position) != 2:
                 raise ValueError("HUD text positions must be [x, y] pixel coordinates")
             hud_positions.append([position[0], position[1], 0])
 
-        super().add_texts(texts, hud_positions, identifiers)
+        super().add_texts(texts, hud_positions, identifiers, centered=centered)
+        added_entries = self._text_entries[-len(texts):] if texts else []
+        for entry, callback in zip(added_entries, callbacks):
+            entry["callback"] = callback
+            if entry["identifier"] is not None and callback is not None:
+                self.callbacks[entry["identifier"]] = callback
 
-    def update_text(self, identifier: str, text=None, position=None):
+    def update_text(self, identifier: str, text=None, position=None, centered=None):
         hud_position = None
         if position is not None:
             if len(position) != 2:
                 raise ValueError("HUD text positions must be [x, y] pixel coordinates")
             hud_position = [position[0], position[1], 0]
 
-        super().update_text(identifier, text, hud_position)
+        super().update_text(identifier, text, hud_position, centered=centered)
+
+    def remove_text(self, identifier: str):
+        removed = super().remove_text(identifier)
+        if removed:
+            self.callbacks.pop(identifier, None)
+        return removed
+
+    def get_text(self, identifier: str):
+        return self.texts[identifier]
+
+    def _handle_click(self):
+        mouse_pressed = self._render.get_mouse_button(self._render.MOUSE_BUTTON_LEFT) == self._render.PRESS
+        if mouse_pressed and not self._mouse_was_pressed:
+            cursor_x, cursor_y = self._render.get_cursor_pos()
+            window_width, window_height = self._render.get_window_size()
+            if window_width > 0 and window_height > 0:
+                cursor_x *= self.screen_size[0] / window_width
+                cursor_y *= self.screen_size[1] / window_height
+
+                for entry in reversed(self._text_entries):
+                    callback = entry.get("callback")
+                    if callback is None:
+                        continue
+
+                    x, y, _ = entry["position"]
+                    text_width = sum(
+                        character in self.charset_lookup
+                        for character in entry["text"].upper()
+                    ) * CHR_W
+                    # Same span the rebuild draws: centered anchors sit in
+                    # the middle, left-aligned (centered=False) at the start.
+                    if entry.get("centered", True):
+                        box_x0, box_x1 = x - text_width / 2, x + text_width / 2
+                    else:
+                        box_x0, box_x1 = x, x + text_width
+                    if box_x0 <= cursor_x < box_x1 and y <= cursor_y < y + CHR_H:
+                        callback()
+                        break
+
+        self._mouse_was_pressed = mouse_pressed
 
     def render(self):
+        if getattr(self, "_hidden", False):
+            return
+        self._handle_click()
         if len(self.instances) == 0:
             return
 

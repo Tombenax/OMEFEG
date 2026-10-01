@@ -1,0 +1,37 @@
+{
+  "elements": [
+    {
+      "text": "Settings",
+      "pos": [
+        640,
+        108
+      ]
+    },
+    {
+      "text": "Audio",
+      "id": "audio",
+      "pos": [
+        640,
+        208
+      ],
+      "callback": "toggle_audio"
+    },
+    {
+      "text": "Shaders",
+      "id": "shaders",
+      "pos": [
+        640,
+        308
+      ],
+      "callback": "toggle_shaders"
+    },
+    {
+      "text": "Back",
+      "pos": [
+        640,
+        408
+      ],
+      "callback": "back"
+    }
+  ]
+}

@@ -8,6 +8,7 @@ flat in int v_layer;
 out vec4 fragColor;
 
 uniform sampler2DArray atlasArray;
+uniform bool enable_shaders;
 uniform vec3 lightPos;
 uniform vec3 viewPos;
 
@@ -38,6 +39,11 @@ void main() {
 
     if (tex.a < 0.1)
         discard;
+
+    if (!enable_shaders) {
+        fragColor = tex;
+        return;
+    }
 
     if (enable_funky_shaders) {
         float r = rand(gl_FragCoord.xy, uint(frame));

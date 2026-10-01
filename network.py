@@ -13,6 +13,7 @@ class Network:
         self,
         host: str = "127.0.0.1",
         port: int = 44699,
+        username:str = "UNKNOWN",
         timeout: float = 2.0,
     ):
         self.address = (host, port)
@@ -42,7 +43,7 @@ class Network:
             try:
                 self.send({
                     "connect": True,
-                    "username": "NOONE"
+                    "username": username
                 })
                 data = self.receive()
                 break

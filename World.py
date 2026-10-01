@@ -195,6 +195,12 @@ class World:
     # adds one row (~7 chunks at R=3), which drains in ~4 frames.
     UPLOADS_PER_FRAME = 2
 
+    # Extra ring kept in RAM beyond what is generated/rendered. With
+    # keep_extra=1 only square(RENDER_DISTANCE+1) stays loaded; anything
+    # outside is saved to disk and evicted, then re-loaded on return.
+    KEEP_EXTRA = 1
+    CHUNK_STEP = 10
+
     def __init__(self, render, seed, heightmap, rules, **kwargs):
         import threading as _th
         import queue as _queue
@@ -204,10 +210,26 @@ class World:
         self.seed = seed
         self.heightmap = heightmap
         self.rules = rules
+        # persistent=False (multiplayer) keeps everything in RAM like
+        # before; persistent=True streams chunks through per-chunk files.
+        self.persistent = kwargs.pop("persistent", True)
         self.kwargs = kwargs
         self.biomes_map = HeightMap(heightmap, 10, 10, 3, 10)
 
         self.chunks:ChunksList = ChunksList()
+
+        # Per-chunk save dir (<save_dir>/chunks/chunk_X_Z.bin). Only the
+        # RENDER_DISTANCE+1 square lives in RAM; the rest lives here.
+        self._chunk_dir = None
+        if self.persistent:
+            try:
+                from utils import _save_dir as _get_save_dir
+                base = _get_save_dir()
+                self._chunk_dir = os.path.join(base, "chunks")
+                os.makedirs(self._chunk_dir, exist_ok=True)
+            except Exception:
+                self._chunk_dir = None
+                self.persistent = False
 
         # Time-sliced update() queue (see place_block/poll_update_queue).
         self.update_queue = collections.deque()
@@ -241,10 +263,18 @@ class World:
         """Submit a chunk bake if missing and not already pending.
 
         Returns True when a new job was submitted. Never touches GL.
+        Refuses when a save exists (load it from disk instead, so workers
+        never bake fresh terrain over the player's edits).
         """
         key = (position[0], 0, position[2])
         if key in self.chunks.positions_blocks:
             return False
+        if self.persistent and self._chunk_dir is not None:
+            try:
+                if self.has_saved_chunk(key):
+                    return False
+            except Exception:
+                pass
         with self._pending_lock:
             if key in self._pending:
                 return False
@@ -293,6 +323,23 @@ class World:
                 continue
             if tuple(key) in self.chunks.positions_blocks:
                 continue
+            # A save may have landed while the worker baked (e.g. the
+            # chunk was evicted+saved after submission). The file holds
+            # the player's edits, so it wins over fresh terrain.
+            if self.persistent and self._chunk_dir is not None:
+                try:
+                    if self.has_saved_chunk(key):
+                        blocks = self.load_saved_blocks(key)
+                        if blocks is not None:
+                            try:
+                                chunk = self._build_chunk_from_blocks(list(pos), blocks)
+                                self.chunks.add(chunk)
+                                added += 1
+                                continue
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
             chunk = Chunk.from_payload(self.render, pos, payload)
             self.chunks.add(chunk)
             added += 1
@@ -303,21 +350,334 @@ class World:
                 pass
         return added
 
-    def ensure_chunks_around(self, center, radius, step=10, budget=UPLOADS_PER_FRAME):
-        """Request every missing chunk in range, finalize finished ones.
+    # ------------------------------------------------------------------
+    # Chunk streaming: only square(radius + KEEP_EXTRA) lives in RAM.
+    # ------------------------------------------------------------------
+    def _chunk_path_for(self, key):
+        if not self._chunk_dir:
+            return None
+        try:
+            return os.path.join(
+                self._chunk_dir,
+                f"chunk_{int(key[0])}_{int(key[2])}.bin",
+            )
+        except (TypeError, IndexError, ValueError):
+            return None
 
-        Call once per frame from the game loop. Returns
-        (submitted, added). Frame cost is bounded by `budget` GL uploads
-        plus one occupancy refresh; the heavy baking runs on workers.
+    def has_saved_chunk(self, key):
+        path = self._chunk_path_for(key)
+        if path is None:
+            return False
+        try:
+            return os.path.isfile(path)
+        except Exception:
+            return False
+
+    def save_chunk(self, chunk):
+        """Persist one loaded chunk to its per-chunk file (atomic)."""
+        if not self.persistent or not self._chunk_dir:
+            return False
+        try:
+            key = (int(chunk.position[0]), 0, int(chunk.position[2]))
+        except (TypeError, IndexError, ValueError, AttributeError):
+            return False
+        path = self._chunk_path_for(key)
+        if path is None:
+            return False
+        try:
+            import struct as _struct
+            buf = bytearray()
+            for block in chunk.blocks.blocks_list:
+                try:
+                    buf += _struct.pack(
+                        ">qqqB",
+                        int(block.position[0]),
+                        int(block.position[1]),
+                        int(block.position[2]),
+                        int(block.texture) & 0xFF,
+                    )
+                except (TypeError, IndexError, AttributeError, ValueError):
+                    continue
+            tmp = path + ".tmp"
+            with open(tmp, "wb") as f:
+                f.write(buf)
+            os.replace(tmp, path)
+            return True
+        except Exception:
+            return False
+
+    def load_saved_blocks(self, key):
+        """Read a per-chunk file. None = no save, [] = saved empty."""
+        path = self._chunk_path_for(key)
+        if path is None:
+            return None
+        try:
+            if not os.path.isfile(path):
+                return None
+        except Exception:
+            return None
+        try:
+            with open(path, "rb") as f:
+                data = f.read()
+        except Exception:
+            return None
+        if len(data) == 0:
+            return []
+        # Truncate a torn tail instead of failing the whole chunk.
+        if len(data) % 25 != 0:
+            data = data[:len(data) // 25 * 25]
+            if not data:
+                return []
+        try:
+            from utils import get_texture
+        except Exception:
+            return None
+        blocks = []
+        idx = 0
+        n = len(data)
+        while idx + 25 <= n:
+            x = int.from_bytes(data[idx:idx + 8], signed=True)
+            idx += 8
+            y = int.from_bytes(data[idx:idx + 8], signed=True)
+            idx += 8
+            z = int.from_bytes(data[idx:idx + 8], signed=True)
+            idx += 8
+            t = int.from_bytes(data[idx:idx + 1])
+            idx += 1
+            try:
+                block = get_texture(t, x, y, z)
+            except Exception:
+                continue
+            if block is not None:
+                blocks.append(block)
+        return blocks
+
+    def _build_chunk_from_blocks(self, position, blocks):
+        """Build a GL-ready chunk from saved blocks (main thread only)."""
+        chunk = Chunk(
+            self.render, list(position), self.seed,
+            self.heightmap, self.biomes_map, self.rules,
+            **dict(self.kwargs, empty=True),
+        )
+        if blocks:
+            chunk.blocks.extend(blocks)
+            chunk.model.add_instances(
+                chunk.blocks.positions, chunk.blocks.textures, "block")
+            chunk._update_dummy()
+        return chunk
+
+    def unload_chunk(self, key, save=None):
+        """Save (optional) + free GL + drop one chunk from RAM.
+
+        Also cancels a still-baking worker job for the same key.
+        Returns True when anything was dropped.
         """
+        if save is None:
+            save = bool(self.persistent and self._chunk_dir)
+        dropped = False
+        with self._pending_lock:
+            item = self._pending.pop(tuple(key), None)
+            if item is not None:
+                dropped = True
+                try:
+                    _, fut = item
+                    try:
+                        fut.cancel()
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+        chunk = self.chunks.positions_blocks.get(tuple(key))
+        if chunk is None:
+            return dropped
+        if save:
+            try:
+                self.save_chunk(chunk)
+            except Exception:
+                pass
+        try:
+            release = getattr(chunk, "release", None)
+            if callable(release):
+                release()
+        except Exception:
+            pass
+        try:
+            self.chunks.remove(chunk)
+        except Exception:
+            pass
+        return True
+
+    def evict_far_chunks(self, center, keep_radius, step=10, save=None):
+        """Unload every RAM chunk outside square(center, keep_radius).
+
+        Called every frame from ensure_chunks_around; the keep set is
+        built with plain loops (not the cached square_range) so walking
+        forever doesn't grow the global function cache.
+        Returns the number of evicted chunks + cancelled jobs.
+        """
+        if save is None:
+            save = bool(self.persistent and self._chunk_dir)
+        try:
+            cx = int(center[0])
+            cz = int(center[2])
+            keep_radius = int(keep_radius)
+            step = int(step)
+        except (TypeError, IndexError, ValueError):
+            return 0
+        keep = set()
+        for ix in range(-keep_radius, keep_radius + 1):
+            for iz in range(-keep_radius, keep_radius + 1):
+                keep.add((cx + ix * step, 0, cz + iz * step))
+        evicted = 0
+        for key in list(self.chunks.positions_blocks.keys()):
+            if key not in keep:
+                try:
+                    if self.unload_chunk(key, save=save):
+                        evicted += 1
+                except Exception:
+                    continue
+        with self._pending_lock:
+            for key in list(self._pending.keys()):
+                if key not in keep:
+                    try:
+                        _, fut = self._pending.pop(key)
+                        try:
+                            fut.cancel()
+                        except Exception:
+                            pass
+                        evicted += 1
+                    except Exception:
+                        continue
+        if evicted:
+            try:
+                self.render.update_block_occupancy(self)
+            except Exception:
+                pass
+        return evicted
+
+    def save_all_loaded_chunks(self):
+        """Persist every RAM chunk. Used at shutdown (no eviction)."""
+        if not self.persistent or not self._chunk_dir:
+            return 0
+        saved = 0
+        for chunk in list(self.chunks.blocks_list):
+            try:
+                if self.save_chunk(chunk):
+                    saved += 1
+            except Exception:
+                continue
+        return saved
+
+    def clear_saved_chunks(self):
+        """Delete all per-chunk files (starting a brand-new world)."""
+        if not self._chunk_dir:
+            return 0
+        removed = 0
+        try:
+            for name in os.listdir(self._chunk_dir):
+                if name.startswith("chunk_") and name.endswith(".bin"):
+                    try:
+                        os.remove(os.path.join(self._chunk_dir, name))
+                        removed += 1
+                    except Exception:
+                        continue
+                elif name.endswith(".tmp"):
+                    try:
+                        os.remove(os.path.join(self._chunk_dir, name))
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        return removed
+
+    def count_saved_chunks(self):
+        if not self._chunk_dir:
+            return 0
+        try:
+            return sum(
+                1 for name in os.listdir(self._chunk_dir)
+                if name.startswith("chunk_") and name.endswith(".bin")
+            )
+        except Exception:
+            return 0
+
+    def ensure_chunks_around(self, center, radius, step=10,
+                             budget=UPLOADS_PER_FRAME, keep_extra=KEEP_EXTRA):
+        """Stream chunks around the player with disk spillover.
+
+        * Only square(center, radius + keep_extra) stays in RAM; chunks
+          outside it are saved to per-chunk files and evicted.
+        * Missing chunks inside square(center, radius) are loaded from
+          disk first (budgeted, nearest-first) and only generated on
+          workers when no save exists.
+        * When the player moves, far chunks unload+save automatically
+          and returning reloads the saved (edited) voxels.
+
+        Call once per frame. Returns (submitted, added).
+        """
+        try:
+            keep_radius = int(radius) + (int(keep_extra) if keep_extra else 0)
+        except (TypeError, ValueError):
+            keep_radius = radius
+        try:
+            self.evict_far_chunks(center, keep_radius, step=step)
+        except Exception:
+            pass
         from utils import square_range
         submitted = 0
+        loaded = 0
+        disk_budget = max(1, int(budget))
+        try:
+            with self._pending_lock:
+                pending_keys = set(self._pending.keys())
+        except Exception:
+            pending_keys = set()
         for x, z in square_range(center, radius, step):
-            if (x, 0, z) in self.chunks.positions_blocks:
+            key = (x, 0, z)
+            if key in self.chunks.positions_blocks or key in pending_keys:
                 continue
-            if self.request_chunk_at([x, 0, z]):
-                submitted += 1
-        added = self.poll_completed(camera_pos=center, budget=budget)
+            if self.persistent and self._chunk_dir is not None:
+                try:
+                    has_save = self.has_saved_chunk(key)
+                except Exception:
+                    has_save = False
+                if has_save:
+                    if loaded >= disk_budget:
+                        # Budget hit: leave for the next frames. Never
+                        # send saved chunks to workers (they would bake
+                        # fresh terrain over the player's edits).
+                        continue
+                    try:
+                        blocks = self.load_saved_blocks(key)
+                    except Exception:
+                        blocks = None
+                    if blocks is not None:
+                        try:
+                            chunk = self._build_chunk_from_blocks([x, 0, z], blocks)
+                            self.chunks.add(chunk)
+                            pending_keys.add(key)
+                            loaded += 1
+                            continue
+                        except Exception:
+                            pass
+                    # Unreadable save: fall through and regenerate.
+            try:
+                if self.request_chunk_at([x, 0, z]):
+                    submitted += 1
+                    pending_keys.add(key)
+            except Exception:
+                continue
+        added = 0
+        try:
+            added = self.poll_completed(camera_pos=center, budget=budget)
+        except Exception:
+            added = 0
+        if loaded:
+            try:
+                self.render.update_block_occupancy(self)
+            except Exception:
+                pass
+            added += loaded
         return submitted, added
 
     def generate_chunk_at(self, position:list[Number], **kwargs):
@@ -615,11 +975,37 @@ class World:
 
     def get_chunk_at(self, chunk_pos:list[Number], **kwargs) -> Chunk:
         #chunk_pos = [chunk_pos[0] // 10 * 10, 0, chunk_pos[2] // 10 * 10]
-        if self.chunks.positions_blocks.get(tuple(chunk_pos)):
-            return self.chunks.positions_blocks.get(tuple(chunk_pos))
-        else:
-            self.generate_chunk_at(chunk_pos, **kwargs)
-            return self.chunks.positions_blocks.get(tuple(chunk_pos))
+        key = tuple(chunk_pos)
+        chunk = self.chunks.positions_blocks.get(key)
+        if chunk is not None:
+            return chunk
+        # Don't leave a stale worker baking the same key behind.
+        with self._pending_lock:
+            item = self._pending.pop(key, None)
+            if item is not None:
+                try:
+                    item[1].cancel()
+                except Exception:
+                    pass
+        # Prefer the saved (edited) voxels over fresh terrain.
+        if self.persistent and self._chunk_dir is not None:
+            try:
+                blocks = self.load_saved_blocks(key)
+            except Exception:
+                blocks = None
+            if blocks is not None:
+                try:
+                    chunk = self._build_chunk_from_blocks(list(chunk_pos), blocks)
+                    self.chunks.add(chunk)
+                    try:
+                        self.render.update_block_occupancy(self)
+                    except Exception:
+                        pass
+                    return chunk
+                except Exception:
+                    pass
+        self.generate_chunk_at(chunk_pos, **kwargs)
+        return self.chunks.positions_blocks.get(tuple(chunk_pos))
 
     def get_block_at(self, position:list[Number]):
         chunk_pos = [position[0] // 10 * 10, 0, position[2] // 10 * 10]
@@ -627,6 +1013,7 @@ class World:
             chunk = self.chunks.positions_blocks[tuple(chunk_pos)]
             return chunk.get_block_at(position)
         else:
-            self.generate_chunk_at(chunk_pos)
-            chunk = self.chunks.positions_blocks[tuple(chunk_pos)]
+            chunk = self.get_chunk_at(chunk_pos)
+            if chunk is None:
+                return None
             return chunk.get_block_at(position)

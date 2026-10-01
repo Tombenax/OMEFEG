@@ -8,6 +8,7 @@ flat in int v_layer;
 out vec4 fragColor;
 
 uniform sampler2DArray atlasArray;
+uniform bool enable_shaders;
 uniform sampler3D blockOccupancy;
 uniform vec3 lightPositions[16];
 uniform vec4 lightColors[16];
@@ -156,6 +157,11 @@ void main() {
 
     if (tex.a < 0.1)
         discard;
+
+    if (!enable_shaders) {
+        fragColor = tex;
+        return;
+    }
 
     // PCG rand every fragment even when the effect is off was pure ALU
     // waste; only roll when funky shaders are enabled.

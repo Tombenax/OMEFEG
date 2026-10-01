@@ -617,6 +617,37 @@ class InstancedModel:
         if callable(register):
             register(self)
 
+        # Visibility flag for menu switching (see Menus in OMEFEG.py).
+        # Kivy canvases keep drawing everything ever attached, so merely
+        # not calling render() does NOT hide anything (unlike desktop GL,
+        # which redraws from scratch every frame). Hiding detaches the
+        # RenderContext; re-showing re-attaches it (never rebuilt).
+        self._hidden = False
+
+    def set_visible(self, visible):
+        """Show/hide without destroying GPU state. Idempotent.
+
+        Drives Menus.activate/deactivate (OMEFEG.py): Kivy canvases keep
+        drawing everything ever attached, so this detach/re-attach is
+        what actually hides a menu (not calling render() is not enough).
+        """
+        visible = bool(visible)
+        self._hidden = not visible
+        try:
+            rc = self._rc
+        except Exception:
+            return
+        if rc is None:
+            return
+        try:
+            render = getattr(self, "_render", None)
+            if render is not None:
+                setv = getattr(render, "_set_rc_visible", None)
+                if callable(setv):
+                    setv(rc, visible, hud=getattr(self, "_is_hud", False))
+        except Exception:
+            pass
+
     # -- instance bookkeeping (identical math to Render.py) -----------------
 
     def add_instances(self, positions: list[list[Number]],
@@ -785,7 +816,8 @@ class InstancedModel:
             self._mesh.indices = self.indices_all.tolist()
             render = self._render
             if render is not None:
-                render._set_rc_visible(self._rc, True)
+                render._set_rc_visible(
+                    self._rc, True, hud=getattr(self, "_is_hud", False))
             self._visible = True
         except Exception:
             if os.environ.get("MOBILE_RENDER_DEBUG"):
@@ -809,6 +841,8 @@ class InstancedModel:
                 traceback.print_exc()
 
     def render(self):
+        if getattr(self, "_hidden", False):
+            return
         if len(self.instances) == 0 and self.vertices_all.shape[0] == 0:
             if self._rc is not None and self._visible:
                 try:
@@ -1153,7 +1187,9 @@ def load_obj(file_path: str):
 
 CUBE_MODEL_INFO = load_obj("assets/models/block.obj")
 
-CHARSET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890:!? "
+CHARSET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890:!? ."
+# NOTE: keep the trailing "." (same order as desktop Render.py) so glyph
+# layer indices match across builds.
 
 # quad facing X- (same base geometry as Render.py text/collectibles)
 _QUAD_VERTICES = np.array(
@@ -1201,25 +1237,55 @@ class InstancedText(InstancedModel):
         # Desktop writes GPU buffers here; we rebuild the merged mesh.
         self._upload()
 
+    def _rendered_length(self, text):
+        """Number of glyphs actually drawn (unknown chars are skipped)."""
+        return sum(1 for c in text.upper() if c in self.charset_lookup)
+
+    def _center_offset(self, entry):
+        """Half-width shift so a centered entry sits on its position.
+
+        Returns 0 for left-aligned (centered=False) entries.
+        """
+        if not entry.get("centered", True):
+            return 0.0
+        return self._rendered_length(entry["text"]) / 2.0
+
     def _rebuild_text_instances(self):
         instances = []
         textures = []
 
         for entry in self._text_entries:
             text, position = entry["text"], entry["position"]
-            for character_index, character in enumerate(text.upper()):
+            # Autocenter (desktop parity): the anchor is the middle of the
+            # drawn glyphs. Unknown chars are skipped instead of KeyError.
+            start = position[2] - self._center_offset(entry)
+            drawn = 0
+            for character in text.upper():
+                tex = self.charset_lookup.get(character)
+                if tex is None:
+                    continue
                 model = np.eye(4, dtype="f4")
                 model[3, 0] = position[0]
                 model[3, 1] = position[1]
-                model[3, 2] = position[2] + character_index
+                model[3, 2] = start + drawn
                 instances.append(model)
-                textures.append(self.charset_lookup[character])
+                textures.append(tex)
+                drawn += 1
 
         self.instances = np.asarray(instances, dtype="f4").reshape((-1, 4, 4))
         self.tex_insta = np.asarray(textures, dtype="f4")
         self._upload_text_instances()
 
-    def add_texts(self, texts, positions, identifiers=None):
+    @staticmethod
+    def _normalize_centered(centered, count):
+        if isinstance(centered, bool):
+            return [centered] * count
+        flags = list(centered)
+        if len(flags) != count:
+            raise ValueError("centered must match the number of texts")
+        return [bool(f) for f in flags]
+
+    def add_texts(self, texts, positions, identifiers=None, centered=True):
         if len(texts) != len(positions):
             raise ValueError("texts and positions must have the same length")
 
@@ -1228,7 +1294,9 @@ class InstancedText(InstancedModel):
         elif len(identifiers) != len(texts):
             raise ValueError("identifiers must match the number of texts")
 
-        for text, position, identifier in zip(texts, positions, identifiers):
+        centered_flags = self._normalize_centered(centered, len(texts))
+
+        for text, position, identifier, center in zip(texts, positions, identifiers, centered_flags):
             if len(position) != 3:
                 raise ValueError("text positions must be [x, y, z]")
             if identifier is not None and identifier in self.texts:
@@ -1238,6 +1306,7 @@ class InstancedText(InstancedModel):
                 "text": text,
                 "position": list(position),
                 "identifier": identifier,
+                "centered": center,
             }
             self._text_entries.append(entry)
             if identifier is not None:
@@ -1245,7 +1314,7 @@ class InstancedText(InstancedModel):
 
         self._rebuild_text_instances()
 
-    def update_text(self, identifier: str, text=None, position=None):
+    def update_text(self, identifier: str, text=None, position=None, centered=None):
         if identifier not in self.texts:
             raise KeyError(f"unknown text identifier: {identifier}")
 
@@ -1256,6 +1325,8 @@ class InstancedText(InstancedModel):
             if len(position) != 3:
                 raise ValueError("text positions must be [x, y, z]")
             entry["position"] = list(position)
+        if centered is not None:
+            entry["centered"] = bool(centered)
 
         self._rebuild_text_instances()
 
@@ -1339,6 +1410,10 @@ class HUDText(InstancedText):
         self._hud_built_for = None
         # same public attributes the desktop HUDText sets
         self.screen_size = kwargs.get("screen_size", (WIDTH, HEIGHT))
+        # Menu buttons (desktop parity): per-entry callbacks fired by
+        # _handle_click on a fresh left-button press.
+        self.callbacks = {}
+        self._mouse_was_pressed = False
 
     def _screen_size(self):
         render = self._render
@@ -1374,18 +1449,26 @@ class HUDText(InstancedText):
         tiles_y = max(int(atlas_h // tile_h), 1)
         for entry in self._text_entries:
             text, position = entry["text"], entry["position"]
-            for character_index, character in enumerate(text.upper()):
+            # Autocenter (desktop parity): glyph 0 starts half the drawn
+            # length left of the anchor instead of at it. Unknown chars
+            # are skipped instead of raising KeyError.
+            start = -self._center_offset(entry)
+            drawn = 0
+            for character in text.upper():
+                layer = self.charset_lookup.get(character)
+                if layer is None:
+                    continue
+                layer = int(layer)
                 # upright 2D mapping: tile row counted from the bottom.
-                layer = int(self.charset_lookup[character])
                 column = layer % columns
                 row_bottom = tiles_y - 1 - (layer // columns)
                 base = len(verts) // 8
                 for qx, qy, qu, qv in corners:
-                    # x grows with the character index, y is the entry
+                    # x grows with the drawn glyph index, y is the entry
                     # position (both in pixels, origin top-left).
                     x_px = (
                         position[0]
-                        + character_index * tile_w
+                        + (start + drawn) * tile_w
                         + qx * tile_w
                     )
                     y_px = position[1] + qy * tile_h
@@ -1401,6 +1484,7 @@ class HUDText(InstancedText):
                 inds.extend(
                     [base, base + 1, base + 2, base + 3, base + 4, base + 5]
                 )
+                drawn += 1
 
         if verts:
             self.vertices_all = np.asarray(verts, dtype=np.float32).reshape(-1, 8)
@@ -1414,7 +1498,12 @@ class HUDText(InstancedText):
     def _upload_text_instances(self):
         self._rebuild_hud()
 
-    def add_texts(self, texts, positions, identifiers=None):
+    def add_texts(self, texts, positions, identifiers=None, callbacks=None, centered=True):
+        if callbacks is None:
+            callbacks = [None] * len(texts)
+        elif len(callbacks) != len(texts):
+            raise ValueError("callbacks must match the number of texts")
+
         hud_positions = []
         for position in positions:
             if len(position) != 2:
@@ -1423,9 +1512,14 @@ class HUDText(InstancedText):
                 )
             hud_positions.append([position[0], position[1], 0])
 
-        super().add_texts(texts, hud_positions, identifiers)
+        super().add_texts(texts, hud_positions, identifiers, centered=centered)
+        added_entries = self._text_entries[-len(texts):] if texts else []
+        for entry, callback in zip(added_entries, callbacks):
+            entry["callback"] = callback
+            if entry["identifier"] is not None and callback is not None:
+                self.callbacks[entry["identifier"]] = callback
 
-    def update_text(self, identifier: str, text=None, position=None):
+    def update_text(self, identifier: str, text=None, position=None, centered=None):
         hud_position = None
         if position is not None:
             if len(position) != 2:
@@ -1434,9 +1528,57 @@ class HUDText(InstancedText):
                 )
             hud_position = [position[0], position[1], 0]
 
-        super().update_text(identifier, text, hud_position)
+        super().update_text(identifier, text, hud_position, centered=centered)
+
+    def get_text(self, identifier: str):
+        return self.texts[identifier]
+
+    def _handle_click(self):
+        """Fire menu-button callbacks (desktop HUDText parity).
+
+        Driven by taps: get_mouse_button edge + get_cursor_pos, both fed
+        by the touch handlers, using the same centered span _rebuild_hud
+        draws (glyph i starts at position[0] + (start + i) * tile_w).
+        """
+        try:
+            mouse_pressed = (
+                self._render.get_mouse_button(MOUSE_BUTTON_LEFT) == PRESS
+            )
+        except Exception:
+            return
+        if mouse_pressed and not self._mouse_was_pressed:
+            try:
+                cursor_x, cursor_y = self._render.get_cursor_pos()
+                window_width, window_height = self._render.get_window_size()
+            except Exception:
+                cursor_x, cursor_y, window_width, window_height = 0, 0, 0, 0
+            if window_width > 0 and window_height > 0:
+                sw, sh = self._screen_size()
+                cursor_x *= sw / window_width
+                cursor_y *= sh / window_height
+                tile_w, tile_h, _, _ = _ATLASES["chars"]
+                for entry in reversed(self._text_entries):
+                    callback = entry.get("callback")
+                    if callback is None:
+                        continue
+                    x, y, _ = entry["position"]
+                    n = self._rendered_length(entry["text"])
+                    box_x = x + (-self._center_offset(entry)) * tile_w
+                    if (
+                        box_x <= cursor_x < box_x + n * tile_w
+                        and y <= cursor_y < y + tile_h
+                    ):
+                        try:
+                            callback()
+                        except Exception:
+                            pass
+                        break
+        self._mouse_was_pressed = mouse_pressed
 
     def render(self):
+        if getattr(self, "_hidden", False):
+            return
+        self._handle_click()
         if self._hud_built_for != self._screen_size():
             self._rebuild_hud()
         if self.vertices_all.shape[0] == 0:
@@ -1509,6 +1651,10 @@ class _GameWidget(Widget):
 
     def on_touch_down(self, touch):
         render = self._render
+        try:
+            render._track_cursor(touch.x, touch.y)
+        except Exception:
+            pass
         if self.collide_point(touch.x, touch.y):
             if getattr(touch, "button", "left") == "right":
                 render._mouse_held.add(MOUSE_BUTTON_RIGHT)
@@ -1535,6 +1681,10 @@ class _GameWidget(Widget):
 
     def on_touch_move(self, touch):
         render = self._render
+        try:
+            render._track_cursor(touch.x, touch.y)
+        except Exception:
+            pass
         if touch.uid == render._look_uid:
             # direct 1:1 drag-look: the view turns exactly as far as
             # the finger moves (same deltas as a desktop mouse drag)
@@ -1552,6 +1702,10 @@ class _GameWidget(Widget):
 
     def on_touch_up(self, touch):
         render = self._render
+        try:
+            render._track_cursor(touch.x, touch.y)
+        except Exception:
+            pass
         if getattr(touch, "button", None) == "right":
             render._mouse_held.discard(MOUSE_BUTTON_RIGHT)
             return True
@@ -1637,6 +1791,12 @@ class _GameApp(App):
         self._render = render
 
     def build(self):
+        # May run twice: once early in Render.__init__ (so the blocking
+        # menu phase has a live widget tree) and once from app.run().
+        # Reuse the first tree: rebuilding would orphan menu-time canvas
+        # objects and double-schedule the game update.
+        if getattr(self, "_root", None) is not None:
+            return self._root
         render = self._render
         root = FloatLayout()
         game = _GameWidget(render)
@@ -1700,7 +1860,7 @@ class _GameApp(App):
         else:
             self._keyboard = None
 
-        Clock.schedule_interval(render._frame, 0)
+        self._root = root
         return root
 
     def on_start(self):
@@ -1708,6 +1868,15 @@ class _GameApp(App):
         render._gl_ready = True
         try:
             render._load_textures()
+        except Exception:
+            pass
+        # Start the game update only here (after init_function, incl. its
+        # blocking menus, has fully returned; on_start runs once per app
+        # lifetime, so exactly one schedule). Scheduling it in build()
+        # would let menu pumping (poll_events) run gameplay behind the
+        # menus.
+        try:
+            Clock.schedule_interval(render._frame, 0)
         except Exception:
             pass
         # push initial uniforms once GL exists
@@ -1755,16 +1924,29 @@ class Render:
         dtype="f4",
     )
 
-    def __init__(self, init_function: Callable, update_function: Callable):
+    def __init__(self, init_function: Callable, update_function: Callable,
+                 settings: dict | None = None):
         global _ACTIVE_RENDER
         self.init_function = init_function
         self.update_function = update_function
+        # Same reference OMEFEG.py passes on desktop (Render takes it too),
+        # so feature flags like settings["shaders"] behave identically.
+        if settings is None:
+            settings = {"shaders": True}
+        self.settings = settings
 
         # render.window is passed to get_key() by Camera; keep it self.
         self.window = self
 
         self.ctx = _CtxProxy(self)
         self.ctx.clear(0, 0, 0, 1)
+
+        # Multiplayer address box (desktop text_buffer parity). Fed by
+        # _on_key_down (typed text, backspace, enter).
+        self.text_buffer = ""
+        # Last touch point in top-down screen pixels (desktop cursor
+        # parity for menu hit-testing). None until the first touch.
+        self._cursor_xy = None
 
         self.dt = 1.0 / 60.0
 
@@ -1811,11 +1993,32 @@ class Render:
 
         self.init_programs()
 
+        self._app = _GameApp(self)
+        # Build the widget tree NOW, not in app.run(): OMEFEG.py runs
+        # blocking glfw-style menu loops inside init_function, before the
+        # Kivy app loop starts. Without a live widget, polled input has
+        # nowhere to land and canvas ops have nowhere to draw (black
+        # frozen window). The game update itself stays app-driven (see
+        # on_start): nothing gameplay-related is scheduled here, so menus
+        # can't run gameplay behind the scenes.
+        try:
+            root = self._app.build()
+        except Exception:
+            root = None
+        try:
+            self._prep_event_loop(root)
+        except Exception:
+            pass
+        self._gl_ready = True
+        try:
+            self._load_textures()
+        except Exception:
+            pass
+
         _ACTIVE_RENDER = self
 
         self.init_function(self)
 
-        self._app = _GameApp(self)
         self._app.run()
 
     # -- programs (uniform proxies, same names as desktop) ------------------
@@ -1865,7 +2068,32 @@ class Render:
         self.HUDText_program["ATLAS_W"] = CHAR_W
         self.HUDText_program["ATLAS_H"] = CHAR_H
 
+        # Feature-flag plumbing (desktop parity: Render writes
+        # enable_shaders every frame). The GLES2 shaders are fixed-function
+        # here, so this is stored compat state for API uniformity.
+        shaders_enabled = self.settings.get("shaders") is True
+        for prog in (
+            self.blocks_program,
+            self.text_program,
+            self.chunk_program,
+            self.item_program,
+        ):
+            prog["enable_shaders"].value = shaders_enabled
+
     def update_programs(self):
+        # Feature-flag sync (desktop parity: flipping settings["shaders"]
+        # in OMEFEG.py takes effect live; stored, shaders are fixed here).
+        try:
+            shaders_enabled = self.settings.get("shaders") is True
+            for prog in (
+                self.blocks_program,
+                self.text_program,
+                self.chunk_program,
+                self.item_program,
+            ):
+                prog["enable_shaders"].value = shaders_enabled
+        except Exception:
+            pass
         try:
             view = self.CAMERA.view.astype("f4")
             campos = self.CAMERA.position.astype("f4")
@@ -1934,6 +2162,8 @@ class Render:
         # nothing to upload; just record the set for API compatibility
         # with World.py / OMEFEG.py (which call this on the desktop build).
         # Incremental: union only chunks not seen before (O(new blocks)).
+        # Evicted chunks are dropped (full rebuild) so the set doesn't
+        # grow forever now that only square(RENDER_DISTANCE+1) is in RAM.
         try:
             occ = getattr(self, "_occupied", None)
             stamped = getattr(self, "_occ_stamped", None)
@@ -1942,6 +2172,18 @@ class Render:
                 self._occ_stamped = set()
                 occ = self._occupied
                 stamped = self._occ_stamped
+            try:
+                keys_now = set(world.chunks.positions_blocks.keys())
+            except Exception:
+                keys_now = set(tuple(c.position) for c in world.chunks.blocks_list)
+            if not keys_now >= stamped:
+                # Chunks were evicted: rebuild from the RAM survivors.
+                occ = set()
+                for chunk in world.chunks.blocks_list:
+                    occ.update(chunk.blocks.occupied)
+                self._occupied = occ
+                self._occ_stamped = set(keys_now)
+                return
             for chunk in world.chunks.blocks_list:
                 key = tuple(chunk.position)
                 if key not in stamped:
@@ -1956,13 +2198,6 @@ class Render:
     def _register_model(self, model):
         if model not in self._models:
             self._models.append(model)
-
-    def _texture(self, kind):
-        tex = self._textures.get(kind)
-        if tex is None:
-            self._load_textures()
-            tex = self._textures.get(kind)
-        return tex
 
     def _load_textures(self):
         # Preload attempt (GL context exists in on_start).  The authoritative
@@ -2036,18 +2271,45 @@ class Render:
             except Exception:
                 pass
 
-    def _set_rc_visible(self, rc, visible):
+    def _set_rc_visible(self, rc, visible, hud=False):
+        # NOTE: canvas instructions expose no .parent attribute (reading it
+        # raises AttributeError and silently disables the whole call), so
+        # membership in the canvases is tested explicitly instead.
         try:
-            parent = rc.parent
+            widget = self._game_widget
+            if widget is None or rc is None:
+                return
+            main, after = widget.canvas, widget.canvas.after
         except Exception:
             return
+
+        def _has(canvas):
+            try:
+                return rc in list(canvas.children)
+            except Exception:
+                return False
+
         try:
-            if visible and parent is None:
-                # re-attach world contexts to the main canvas
-                if self._game_widget is not None:
+            in_main, in_after = _has(main), _has(after)
+            if visible:
+                if in_main or in_after:
+                    return
+                if hud:
+                    self._attach_hud_rc(rc)
+                elif self._game_widget is not None:
+                    # re-attach world contexts to the main canvas
                     self._game_widget.canvas.add(rc)
-            elif not visible and parent is not None:
-                parent.remove(rc)
+            else:
+                if in_main:
+                    try:
+                        main.remove(rc)
+                    except Exception:
+                        pass
+                if in_after:
+                    try:
+                        after.remove(rc)
+                    except Exception:
+                        pass
         except Exception:
             pass
 
@@ -2070,6 +2332,12 @@ class Render:
     # -- frame ---------------------------------------------------------------
 
     def _frame(self, dt):
+        # First game frame: strip runTouchApp()'s duplicate input providers
+        # (see _prep_event_loop). Unstarted, so removal is clean.
+        try:
+            self._dedup_providers()
+        except Exception:
+            pass
         if self._should_close:
             try:
                 self._app.stop()
@@ -2106,6 +2374,17 @@ class Render:
             h = self._win_h
         return h - y
 
+    def _track_cursor(self, x, y_bottom_up):
+        """Remember a touch point as top-down pixels (glfw cursor parity)."""
+        try:
+            h = Window.height or self._win_h
+        except Exception:
+            h = self._win_h
+        try:
+            self._cursor_xy = [float(x), float(h) - float(y_bottom_up)]
+        except Exception:
+            pass
+
     def _on_key_down(self, _keyboard, keycode, _text, _modifiers):
         try:
             code, name = keycode
@@ -2115,6 +2394,19 @@ class Render:
             self._keys.add(code)
         if isinstance(name, str):
             self._key_names.add(name)
+        # Feed the multiplayer address box (desktop char_callback /
+        # key_callback parity: typed text, backspace chops, enter newline).
+        try:
+            if name == "backspace":
+                self.text_buffer = self.text_buffer[:-1]
+            elif name in ("enter", "numpadenter"):
+                self.text_buffer += "\n"
+            elif isinstance(_text, str) and _text and all(
+                ch.isprintable() for ch in _text
+            ):
+                self.text_buffer += _text
+        except Exception:
+            pass
 
     def _on_key_up(self, _keyboard, keycode):
         try:
@@ -2157,6 +2449,164 @@ class Render:
 
     def get_window_pos(self):
         return (0, 0)
+
+    # -- desktop Render API parity (used by OMEFEG.py menu loops) ----------
+
+    def window_should_close(self):
+        if self._should_close:
+            return True
+        # X-ing the window during menus sets EventLoop.quit via SDL;
+        # honor it so menu loops exit (desktop glfw parity) instead of
+        # spinning forever on a closed window.
+        try:
+            from kivy.base import EventLoop
+            if EventLoop.quit:
+                return True
+        except Exception:
+            pass
+        return False
+
+    @staticmethod
+    def _pump_kivy_frame():
+        """Run one Kivy frame: poll SDL, dispatch input, tick Clock, redraw.
+
+        OMEFEG.py runs blocking glfw-style loops (menus) that never yield
+        to the Kivy app loop. This mirrors EventLoopBase.mainloop()'s body
+        (idle + window.mainloop): without both halves, touch/keyboard
+        input never arrives (SDL queue unpolled) and submitted canvas ops
+        never present -- the window sits black and frozen while the loop
+        spins. Swallows everything: a dead/closable window must not take
+        the game down with it.
+        """
+        try:
+            from kivy.base import EventLoop
+            EventLoop.idle()
+            try:
+                window = EventLoop.window
+            except Exception:
+                window = None
+            if window is not None:
+                try:
+                    window.mainloop()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def poll_events(self):
+        self._pump_kivy_frame()
+        return None
+
+    def swap_buffers(self):
+        # Present-on-swap (desktop parity): flush this frame's canvas work
+        # right away instead of waiting for the next poll_events().
+        self._pump_kivy_frame()
+        return None
+
+    def _prep_event_loop(self, root):
+        """Wire input + window early, before app.run() (idempotent).
+
+        The blocking menu phase needs, pre-run, what runTouchApp() sets up
+        at app start: instantiated/started input providers (touch, mouse),
+        the widget tree attached to the Window, and a started Clock.
+        Done here with Kivy's own _runTouchApp_prepare (no drift), plus
+        the WidgetException-safe dance: root is attached now, and
+        app.built is pre-set so _run_prepare() won't rebuild or
+        double-add it later. Providers this adds are recorded and the
+        duplicates runTouchApp() adds later are stripped on the first
+        game frame (see _dedup_providers), so nothing is ever delivered
+        twice (which would e.g. flip toggle buttons twice per tap).
+        """
+        if getattr(self, "_loop_ready", False):
+            return
+        try:
+            from kivy.base import EventLoop, _runTouchApp_prepare
+            from kivy.core.window import Window as _Window
+        except Exception:
+            return
+        if EventLoop.window is None:
+            return
+        try:
+            self._preexisting_providers = list(EventLoop.input_providers)
+            _runTouchApp_prepare()
+            self._early_providers = [
+                p
+                for p in EventLoop.input_providers
+                if p not in self._preexisting_providers
+            ]
+        except Exception:
+            self._preexisting_providers = []
+            self._early_providers = []
+        if root is not None:
+            try:
+                if getattr(root, "parent", None) is None:
+                    _Window.add_widget(root)
+            except Exception:
+                pass
+            try:
+                # Skip rebuild + double-add in _run_prepare (it would raise
+                # WidgetException: root already parented). app.root stays
+                # None; nothing in the game reads it.
+                self._app.built = True
+            except Exception:
+                pass
+        self._loop_ready = True
+
+    def _dedup_providers(self):
+        """Drop runTouchApp()'s duplicate input providers (once).
+
+        Runs on the first game frame, i.e. strictly after runTouchApp()'s
+        own prepare added a second provider set. Those were never started
+        (EventLoop.start() early-returns once started), so removing them
+        is clean: no bindings to undo. Keeps pre-existing + early ones.
+        """
+        if getattr(self, "_providers_deduped", False):
+            return
+        self._providers_deduped = True
+        try:
+            from kivy.base import EventLoop
+            keep = set(map(id, getattr(self, "_early_providers", [])))
+            try:
+                preexisting = getattr(self, "_preexisting_providers", [])
+                keep.update(map(id, preexisting))
+            except Exception:
+                pass
+            for p in list(EventLoop.input_providers):
+                if id(p) not in keep:
+                    try:
+                        EventLoop.remove_input_provider(p)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+    def get_cursor_pos(self):
+        """Last touch point as top-down (x, y) pixels, like glfw."""
+        if self._cursor_xy is not None:
+            try:
+                return (float(self._cursor_xy[0]), float(self._cursor_xy[1]))
+            except Exception:
+                pass
+        try:
+            w, h = self.get_window_size()
+            return (w / 2.0, h / 2.0)
+        except Exception:
+            return (0.0, 0.0)
+
+    def get_window_size(self):
+        try:
+            w, h = int(Window.width), int(Window.height)
+            if w > 0 and h > 0:
+                return (w, h)
+        except Exception:
+            pass
+        return (int(self._win_w), int(self._win_h))
+
+    def request_text_buffer(self):
+        return self.text_buffer
+
+    def set_text_buffer(self, value: str):
+        self.text_buffer = value if isinstance(value, str) else ""
 
     def _on_resize(self, window, width, height):
         try:

@@ -24,25 +24,7 @@ from lists import *
 from utils import *
 from network import Network
 import threading
-import argparse
 import struct
-
-argParser = argparse.ArgumentParser()
-argParser.add_argument("--multiplayer")
-argParser.add_argument("--not_move_window")
-argParser.add_argument("--load_world")
-
-parsedArgs = argParser.parse_args()
-
-MULTIPLAYER = parsedArgs.multiplayer
-if MULTIPLAYER:
-    spl = MULTIPLAYER.split(":")
-    PORT = int(spl[1])
-    MULTIPLAYER = spl[0]
-
-MOVE_WINDOW = not parsedArgs.not_move_window
-
-LOAD_WORLD = parsedArgs.load_world
 
 
 class sin:
@@ -58,33 +40,7 @@ class Flat:
 
     def __call__(self, x, y) -> float:
         return 0.0
-            
-seed = string_to_fixed_number(str(0), 10)
-random_seed = Random(seed)
-
-FLAT = True
-
-generate_sin_world = False
-
-
-if FLAT:
-    heightmap = Flat()
-    sin_world = False
-else:
-    if generate_sin_world:
-        heightmap = sin()
-        sin_world = True
-    else:
-        if MULTIPLAYER:
-            heightmap = PerlinNoiseFactory(octaves=1, seed=seed)
-            sin_world = False
-        else:
-            if random.random() * 100 < 99:
-                heightmap = PerlinNoiseFactory(octaves=1, seed=seed)
-                sin_world = False
-            else:
-                heightmap = sin()
-                sin_world = True
+        
     
 
 with open("worldgeneration/worldGeneration.json", "r") as f:
@@ -149,42 +105,323 @@ max_x, min_x, max_y, min_y = 0, 0, 0, 0
 def load_player(data):
     return list(struct.unpack(">ddd", data[:24]))
 
-def init(render):
-    global TEXT, coll, WORLD, RENDER_DISTANCE, NETWORK, PLAYERS, min_x, max_x, min_y, max_y, hud, SLECTED
 
-    WORLD = World(render, random_seed, heightmap, rules, sin_world=sin_world, biomes = not FLAT)
+class Menus:
+    def __init__(self, render):
+        self.indexis = {}
+        self.active = set()
+        self._render = render
+
+    def load_template(self, idx_or_name, filename, callbacks_lookup):
+
+        if idx_or_name in self.indexis:
+            raise KeyError(f"{idx_or_name} already exists!!")
+
+        text = HUDText(render=self._render, charset=CHARSET)
+
+        with open(filename, "r") as f:
+            content = json.load(f)
+
+        for index, element in enumerate(content.get("elements", [])):
+            callback = callbacks_lookup.get(element.get("callback"))
+            identifier = element.get("id", f"{idx_or_name}:{index}")
+            text_value = element.get("text", "No text component found")
+            # NOTE: no manual x-shift here. InstancedText already
+            # autocenters every entry on its anchor, and the click box
+            # uses the same centered span; shifting here would cancel the
+            # centering (and misalign clicks). Anchors live in the JSONs.
+            position = list(element.get("pos", (30, 30)))
+            text.add_texts(
+                [text_value],
+                [position],
+                [identifier],
+                [callback],
+            )
+
+        self.indexis[idx_or_name] = text
+
+    def activate(self, idx_or_name):
+        self.active.add(idx_or_name)
+        # Visibility follows activation: desktop redraws every frame so
+        # this is a no-op there, but mobile canvases keep drawing
+        # everything ever attached -- without this, deactivated menus
+        # stay on screen forever.
+        try:
+            self.indexis[idx_or_name].set_visible(True)
+        except (KeyError, AttributeError):
+            pass
+
+    def deactivate(self, idx_or_name):
+        self.active.discard(idx_or_name)
+        try:
+            self.indexis[idx_or_name].set_visible(False)
+        except (KeyError, AttributeError):
+            pass
+
+    def render(self):
+        # Snapshot: button callbacks activate/deactivate menus
+        # mid-iteration; iterating a copy keeps the switch deterministic
+        # (next frame draws exactly the new set).
+        for up in tuple(self.active):
+            self.indexis[up].render()
+
+def set_variable(value):
+    global selected
+
+    selected = value
+
+def load_settings(data):
+    print([True if i else False for i in data])
+    return [True if i else False for i in data]
+
+settings_loaded = open_save_file("preferences.bin", load_settings)
+
+settings = {
+    "audio": settings_loaded[0] if settings_loaded else True,
+    "shaders": settings_loaded[1] if settings_loaded else False
+}
+
+def toggle_audio():
+    global menus, settings
+
+    settings["audio"] = not settings["audio"]
+
+    menus.indexis["settings"].update_text("audio", "Audio: " + ("ON" if settings["audio"] else "OFF"))
+
+def toggle_shaders():
+    global menus, settings
+
+    settings["shaders"] = not settings["shaders"]
+
+    menus.indexis["settings"].update_text("shaders", "Shaders: " + ("ON" if settings["shaders"] else "OFF"))
+
+def back_from_settings():
+    global menus
+
+    menus.deactivate("settings")
+    menus.activate("esc_screen")
+
+def to_settings():
+    global menus
+
+    menus.deactivate("esc_screen")
+    menus.activate("settings")
+
+def init(render):
+    global TEXT, coll, WORLD, RENDER_DISTANCE, NETWORK, PLAYERS, min_x, max_x, min_y, max_y, hud, SLECTED, menus, selected, MULTIPLAYER, LOAD_WORLD
 
     RENDER_DISTANCE = 3
 
-    if  LOAD_WORLD:
-        render.CAMERA.position = np.array(open_save_file("player.bin", load_player), dtype="f4")
+    menus = Menus(render)
 
-        world = open_save_file("world.bin", convert_to_blocks)
 
-        if world:
-            grouped = {}
-            for block in world:
-                chunk_pos = (block.position[0]//10*10, 0, block.position[2]//10*10)
-                grouped.setdefault(chunk_pos, []).append(block)
+    menus.load_template("mainscreen", "assets/layouts/main_screen.json", {"load_world": lambda: set_variable("load_world"), "erase_world": lambda: set_variable("erase_world"), "multiplayer": lambda: set_variable("multiplayer")})
+    menus.activate("mainscreen")
 
-            for chunk_pos, blocks in grouped.items():
-                chunk = WORLD.get_chunk_at(list(chunk_pos), empty=True)
-                chunk.blocks.clear()
-                for block in blocks:
-                    chunk.blocks.add(block)
-                chunk._update_blocks()
-                chunk._update_dummy()
+    menus.load_template("multiplayer", "assets/layouts/multiplayer_ask.json", {"done": lambda: set_variable("done")})
 
-            render.update_block_occupancy(WORLD)
+    menus.load_template("esc_screen", "assets/layouts/esc_screen.json", {"done": lambda: set_variable("done"), "open_settings": to_settings, "close_esc_screen": lambda: set_variable("close_esc_screen")})
 
+    menus.load_template("settings", "assets/layouts/settings.json", {"toggle_audio": toggle_audio, "toggle_shaders": toggle_shaders, "back": back_from_settings})
+
+    menus.indexis["settings"].update_text("shaders", "Shaders: " + ("ON" if settings["shaders"] else "OFF"))
+    menus.indexis["settings"].update_text("audio", "Audio: " + ("ON" if settings["audio"] else "OFF"))
+
+    selected = None
+
+    render.set_input_mode(render.CURSOR,render.CURSOR_NORMAL)
+
+    print("Showing main menu")
+
+    while selected is None and not render.window_should_close():
+
+        render.poll_events()
+
+        render.ctx.clear()
+
+        menus.render()
+
+        render.swap_buffers()
+
+
+    menus.deactivate("mainscreen")
+
+    print("Selected:", selected)
+
+    MULTIPLAYER, LOAD_WORLD = False, False
+
+    ADDRESS = ""
+
+    if selected == "multiplayer":
+        MULTIPLAYER = True
+    elif selected == "load_world":
+        LOAD_WORLD = True
+
+    if MULTIPLAYER:
+        selected = None
+
+        menus.activate("multiplayer")
+
+    render.set_text_buffer("")
+
+    while selected is None and not render.window_should_close():
+
+        render.poll_events()
+
+        render.ctx.clear()
+
+        menus.indexis["multiplayer"].update_text("address", render.request_text_buffer())
+
+        menus.render()
+
+        render.swap_buffers()
+
+    ADDRESS = render.request_text_buffer().lower()
+
+    render.set_text_buffer("")
+
+    # The address prompt would otherwise stay rendered (and clickable) over
+    # gameplay forever, like any menu left in `active`.
+    menus.deactivate("multiplayer")
+
+    render.set_input_mode(render.CURSOR,render.CURSOR_DISABLED)
+
+    if selected is None:
+        return
+
+
+    seed = string_to_fixed_number(str(0), 10)
+    random_seed = Random(seed)
+
+    FLAT = False
+
+    generate_sin_world = False
+
+
+    if FLAT:
+        heightmap = Flat()
+        sin_world = False
+    else:
+        if generate_sin_world:
+            heightmap = sin()
+            sin_world = True
         else:
+            if MULTIPLAYER:
+                heightmap = PerlinNoiseFactory(octaves=1, seed=seed)
+                sin_world = False
+                result = login_with_github()
+
+                if result == "disabled":
+                    notification("OMEFEG", "Your OMEFEG account is disabled, go to https://tombenax.pythonanywhere.com and enable the account")
+                elif result is None:
+                    notification("OMEFEG", "You don't have an OMEFEG account, go to https://tombnax.pythonanywhere.com and login with Github")
+                else:
+                    print("Username is", result)
+
+
+            else:
+                if random.random() * 100 < 99:
+                    heightmap = PerlinNoiseFactory(octaves=1, seed=seed)
+                    sin_world = False
+                else:
+                    heightmap = sin()
+                    sin_world = True
+
+    WORLD = World(render, random_seed, heightmap, rules, sin_world=sin_world, biomes = not FLAT, persistent=not MULTIPLAYER)
+
+    if LOAD_WORLD:
+        saved_player = open_save_file("player.bin", load_player)
+        if saved_player is not None:
+            try:
+                render.CAMERA.position = np.array(saved_player, dtype="f4")
+            except Exception:
+                pass
+
+        # One-time migration: legacy single-file world.bin -> per-chunk
+        # files. Done on disk without loading everything into RAM, so a
+        # huge old world doesn't blow the RENDER_DISTANCE+1 RAM budget.
+        try:
+            if WORLD.count_saved_chunks() == 0:
+                legacy = open_save_file("world.bin", convert_to_blocks)
+                if legacy:
+                    grouped = {}
+                    for block in legacy:
+                        try:
+                            chunk_pos = (block.position[0] // 10 * 10, 0, block.position[2] // 10 * 10)
+                        except (TypeError, IndexError, AttributeError):
+                            continue
+                        grouped.setdefault(chunk_pos, []).append(block)
+                    for chunk_pos, blocks in grouped.items():
+                        try:
+                            path = WORLD._chunk_path_for(chunk_pos)
+                            if path is None:
+                                continue
+                            buf = bytearray()
+                            for block in blocks:
+                                try:
+                                    buf += struct.pack('>qqqB', int(block.position[0]), int(block.position[1]), int(block.position[2]), int(block.texture) & 0xFF)
+                                except (TypeError, IndexError, AttributeError, ValueError):
+                                    continue
+                            tmp = path + ".tmp"
+                            with open(tmp, "wb") as f:
+                                f.write(buf)
+                            os.replace(tmp, path)
+                        except Exception:
+                            continue
+        except Exception:
+            pass
+
+        if WORLD.count_saved_chunks() == 0 and open_save_file("world.bin", convert_to_blocks) is None:
             notification("World Not Found", "Your worl file was not found, if the file 'world.bin' is in %appdata%/OMEFEG then idk what the heck is happening, else just make a world")
 
             render.set_window_should_close(True)
 
             return
-        
+
+        # Streaming startup: only square(RENDER_DISTANCE) around the
+        # player is loaded (disk first, workers for new terrain). Far
+        # chunks stay in per-chunk files until walked to.
+        try:
+            _pc = render.CAMERA.position.tolist()
+            _pi = list(map(math.floor, _pc))
+            _center = [_pi[0] // 10 * 10, 0, _pi[2] // 10 * 10]
+        except Exception:
+            _center = [0, 0, 0]
+        import time as _chunk_time
+        _deadline = _chunk_time.time() + 30.0
+        while _chunk_time.time() < _deadline:
+            WORLD.ensure_chunks_around(_center, RENDER_DISTANCE, budget=8)
+            _missing = False
+            for _x, _z in square_range(_center, RENDER_DISTANCE, 10):
+                if (_x, 0, _z) not in WORLD.chunks.positions_blocks:
+                    _missing = True
+                    break
+            if not _missing and WORLD.pending_chunk_count == 0:
+                break
+            _chunk_time.sleep(0.001)
+        # Any stragglers (worker error): fall back to sync gen / disk.
+        for _x, _z in square_range(_center, RENDER_DISTANCE, 10):
+            if (_x, 0, _z) not in WORLD.chunks.positions_blocks:
+                try:
+                    WORLD.get_chunk_at([_x, 0, _z])
+                except Exception:
+                    try:
+                        WORLD.generate_chunk_at([_x, 0, _z])
+                    except Exception:
+                        pass
+        for pos in WORLD.chunks.positions_blocks:
+            min_x = min(min_x, pos[0])
+            max_x = max(max_x, pos[0])
+            min_y = min(min_y, pos[0])
+            max_y = max(max_y, pos[0])
+
     else:
+        # Brand-new world: drop any per-chunk files from a previous save
+        # so old far chunks can't haunt the fresh terrain.
+        try:
+            WORLD.clear_saved_chunks()
+        except Exception:
+            pass
         # Threaded startup gen: workers bake in parallel, main thread
         # uploads with a per-iteration budget so the window stays alive.
         # Dict lookup instead of O(n) list scan.
@@ -219,8 +456,9 @@ def init(render):
 
     if MULTIPLAYER:
         NETWORK = Network(
-            MULTIPLAYER,
-            PORT
+            ADDRESS,
+            44699,
+            result
         )
 
 
@@ -246,7 +484,14 @@ def init(render):
     charset=CHARSET
     )
 
-    hud.add_texts(["FPS: negative Infinity", "SELECTED BLOCK: birch leave"], [[0, 0], [0, 30]], ["FPS", "sb"])
+    # Top-left status texts stay left-aligned (centered would push them
+    # half off-screen); menus default to centered.
+    hud.add_texts(
+        ["FPS: negative Infinity", "SELECTED BLOCK: birch leave"],
+        [[0, 0], [0, 30]],
+        ["FPS", "sb"],
+        centered=False,
+    )
 
     render.set_window_size_callback(lambda x,y,z: render.resized(y,z))
 
@@ -256,6 +501,8 @@ def init(render):
 
     for name in mods_names:
         exec(f"globals()['mods'].{name}.Mod.init(globals(), locals())", globals(), locals())
+
+    
 
 posses, rotations = [], []
 block_updates = []
@@ -644,8 +891,9 @@ blocks_placed, blocks_broken = [], []
 
 start_pos = None
 
+
 def update(render):
-    global coll, min_x, max_x, min_y, max_y, PLAYERS, playerdata, source, hud, frames_passed, start_second, SLECTED, selected_block, pressed,blocks_placed, blocks_broken, pause, start_pos
+    global coll, min_x, max_x, min_y, max_y, PLAYERS, playerdata, source, hud, frames_passed, start_second, SLECTED, selected_block, pressed,blocks_placed, blocks_broken, pause, start_pos, MULTIPLAYER, LOAD_WORLD
 
     if render.get_key(render.KEY_ESCAPE) == render.PRESS and cooldown3.is_active:
         pause = not pause
@@ -656,8 +904,15 @@ def update(render):
                 except Exception:
                     pass
             render.set_input_mode(render.CURSOR,render.CURSOR_NORMAL)
+
+            menus.activate("esc_screen")
         else:
             render.set_input_mode(render.CURSOR,render.CURSOR_DISABLED)
+
+            menus.deactivate("esc_screen")
+            menus.deactivate("settings")
+
+    menus.render()
 
     if pause:
         return
@@ -668,10 +923,11 @@ def update(render):
         _is_playing = source is not None and source.get_state() == _al_playing
     except Exception:
         _is_playing = False
-    if source is None or not _is_playing:
+    if (source is None or not _is_playing) and settings["audio"]:
         source = playsound(f"assets/songs/{random.choice(["PEAK-SONG-mono.wav", "Song2-mono.wav", "Song3-mono.wav"])}", sound_position=(0, 3, 0))
 
-    render.ctx.clear(0, 0, 0)
+    elif (source is not None or _is_playing) and not settings["audio"]:
+        source.stop()
 
     listed_camera = render.CAMERA.position.tolist()
     # floor, not int(): int() truncates toward zero, so e.g. x=-0.5 mapped
@@ -680,10 +936,11 @@ def update(render):
     inted_camera = list(map(math.floor, listed_camera))
     camera_chunk_pos = [inted_camera[0]//10*10, 0, inted_camera[2]//10*10]
 
-    # Threaded streaming: submit missing chunks to workers, upload at
-    # most UPLOADS_PER_FRAME finished ones (one occupancy refresh).
-    # Frame cost stays bounded no matter how fast the player moves;
-    # distant chunks pop in over following frames instead of freezing.
+    # Threaded streaming with disk spillover: only
+    # square(RENDER_DISTANCE+1) stays in RAM; chunks outside it are
+    # saved to per-chunk files and unloaded, and walking back reloads
+    # the saved voxels. Frame cost stays bounded no matter how fast the
+    # player moves; distant chunks pop in over following frames.
     _submitted, _added = WORLD.ensure_chunks_around(
         camera_chunk_pos, RENDER_DISTANCE
     )
@@ -767,8 +1024,7 @@ def update(render):
 
     TEXT.render()
 
-
-    if MOVE_WINDOW:
+    if datetime.datetime.now().day == 1 and datetime.datetime.now().month == 4:
         x = datetime.datetime.now()
 
         if x.minute == 46:
@@ -785,7 +1041,8 @@ def update(render):
     if render.get_key(render.KEY_LEFT_ALT) == render.PRESS and not pressed:
         selected_block = next(generator)
         pressed = True
-        hud.update_text("sb", f"SELECTED BLOCK: {selected_block.replace("_", " ")}", [0, 30])
+        selected_text = "SELECTED BLOCK: " + selected_block.replace("_", " ")
+        hud.update_text("sb", selected_text, [0, 30])
         
     elif render.get_key(render.KEY_LEFT_ALT) != render.PRESS and pressed:
         pressed = False
@@ -797,21 +1054,23 @@ def update(render):
         SLECTED.render()
 
     if time.time() - start_second >= 1:
-        hud.update_text("FPS", f"FPS: {frames_passed}", [0, 0])
+        fps_text = f"FPS: {frames_passed}"
+        hud.update_text("FPS", fps_text, [0, 0])
         frames_passed = 0
         start_second = time.time()
 
     frames_passed += 1
     
 
-render = Render(init, update)
+render = Render(init, update, settings)
 
 try:
     WORLD.shutdown_threads(wait=False)
 except (AttributeError, NameError):
     pass
 
-source.stop()
+if source:
+    source.stop()
 
 if MULTIPLAYER:
     try:
@@ -829,18 +1088,24 @@ if MULTIPLAYER:
     except Exception:
         pass
 
-if not MULTIPLAYER:
+try:
+    _should_save = not MULTIPLAYER
+except NameError:
+    _should_save = False
+if _should_save:
     print("Saving world")
-    data = bytes()
-    for chunk in WORLD.chunks.blocks_list:
-        for block in chunk.blocks.blocks_list:            
-            data += struct.pack('>qqqB', *block.position, block.texture)
+    try:
+        saved_chunks = WORLD.save_all_loaded_chunks()
+    except (AttributeError, NameError):
+        saved_chunks = 0
+    print(f"Saved {saved_chunks} chunks around the player (far chunks were already saved on unload)")
 
-    save("world.bin", data)
+    try:
+        data = struct.pack(">ddd", *(render.CAMERA.position.tolist()))
 
-    data = struct.pack(">ddd", *(render.CAMERA.position.tolist()))
-
-    save("player.bin", data)
+        save("player.bin", data)
+    except (AttributeError, NameError):
+        pass
 
     print("Saved world")
 

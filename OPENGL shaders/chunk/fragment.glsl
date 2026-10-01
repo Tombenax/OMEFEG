@@ -8,6 +8,7 @@ flat in int v_layer;
 out vec4 fragColor;
 
 uniform sampler2DArray atlasArray;
+uniform bool enable_shaders;
 uniform sampler3D blockOccupancy;
 uniform vec3 lightPositions[16];
 uniform vec4 lightColors[16];
@@ -134,6 +135,11 @@ void main() {
 
     if (tex.a < 0.1)
         discard;
+
+    if (!enable_shaders) {
+        fragColor = tex;
+        return;
+    }
 
     vec3 color = tex.rgb;
     vec3 norm = normalize(v_normal);

@@ -10,6 +10,8 @@ import importlib as _importlib
 from random import Random  # explicit: was via `from Render import *`
 import json
 
+#TODO: add player rotation when thy walk on the planet
+
 # True on PC, False on Android phones. Override with OMEFEG_DESKTOP=0/1.
 DESKTOP = os.environ.get("OMEFEG_DESKTOP")
 if DESKTOP is None:

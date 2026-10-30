@@ -1,7 +1,6 @@
 import time
 from typing import Any, Callable
 
-import json
 from pyrr import Matrix44
 
 from Number import Number
@@ -10,7 +9,7 @@ from PIL import Image
 import numpy as np
 import os
 import random
-from utils import distance
+from utils import distance, chunk_time, clip
 import math
 
 # Import glfw abstraction
@@ -56,6 +55,43 @@ ITEMS_COUNT = (ITEMS_W / ITEM_W) * (ITEMS_H / ITEM_H)
 LIGHT_FILTER_BLOCKS = frozenset({"birch_leave", "oak_leave", "water"})
 
 
+def _position_match_mask(instance_positions, requested):
+    """Boolean mask over instance_positions rows matching requested rows.
+
+    Integer fast path when every requested coord is integral and inside
+    the int32 packing range (packs to one int64 key per row, matched
+    with vectorized isin -- ~4x faster than per-row tuple hashing at
+    100k+ instances). Falls back to exact float tuple matching otherwise
+    (rotated/non-integral content), so results are always identical.
+    Non-integral master rows can never equal integral requested tuples,
+    so skipping them on the fast path is exact, not approximate.
+    """
+    inst = np.ascontiguousarray(instance_positions, dtype="f4").reshape(-1, 3)
+    if len(inst) == 0:
+        return np.zeros((0,), dtype=bool)
+    req = np.ascontiguousarray(requested, dtype="f4").reshape(-1, 3)
+    if len(req) == 0:
+        return np.zeros((len(inst),), dtype=bool)
+
+    OFF, S, LIM = 300000, 524288, 224000
+    try:
+        req_i = req.astype(np.int32)
+        if bool((req == req_i).all()) and bool(np.abs(req_i).max(initial=0) <= LIM):
+            mi = inst.astype(np.int32)
+            whole = (inst == mi).all(axis=1)
+            if bool(np.abs(mi[whole]).max(initial=0) <= LIM):
+                mk = ((mi[:, 0].astype(np.int64) + OFF) * S + (mi[:, 1].astype(np.int64) + OFF)) * S + (mi[:, 2].astype(np.int64) + OFF)
+                ek = ((req_i[:, 0].astype(np.int64) + OFF) * S + (req_i[:, 1].astype(np.int64) + OFF)) * S + (req_i[:, 2].astype(np.int64) + OFF)
+                mask = np.zeros((len(inst),), dtype=bool)
+                mask[whole] = np.isin(mk[whole], ek)
+                return mask
+    except (ValueError, OverflowError):
+        pass
+
+    requested_set = {tuple(p) for p in req}
+    return np.array([tuple(p) in requested_set for p in inst], dtype=bool)
+
+
 class Render:
 
     PRESS = glfw.PRESS
@@ -68,6 +104,8 @@ class Render:
     KEY_LEFT_CONTROL = glfw.KEY_LEFT_CONTROL
 
     KEY_F = glfw.KEY_F
+
+    KEY_R = glfw.KEY_R
 
     KEY_ESCAPE = glfw.KEY_ESCAPE
 
@@ -83,7 +121,7 @@ class Render:
 
     FOV = 60
 
-    PROJECTION = np.array(Matrix44.perspective_projection(FOV, WIDTH/HEIGHT, 0.1, 1000), dtype='f4')
+    PROJECTION = np.array(Matrix44.perspective_projection(FOV, WIDTH/HEIGHT, 0.1, 100), dtype='f4')
 
     def get_key(self, key:int):
         return glfw.get_key(self.window, key)
@@ -127,6 +165,9 @@ class Render:
     def set_text_buffer(self, value:str):
         self.text_buffer = value
 
+    def set_window_should_close(self, value):
+        glfw.set_window_should_close(self.window, value)
+
     def resized(self, width, height):
         global PROJECTION, WIDTH, HEIGHT
 
@@ -134,7 +175,7 @@ class Render:
 
         WIDTH, HEIGHT = width, height
 
-        self.PROJECTION = np.array(Matrix44.perspective_projection(self.FOV, WIDTH/HEIGHT, 0.1, 1000), dtype='f4')
+        self.PROJECTION = np.array(Matrix44.perspective_projection(self.FOV, WIDTH/HEIGHT, 0.1, 100), dtype='f4')
 
     def init_programs(self):
         self.blocks_program["atlasArray"] = 0
@@ -225,6 +266,8 @@ class Render:
 
         self.ctx = moderngl.create_context()
 
+        self.ctx.enable(moderngl.CULL_FACE)
+
         self.block_occupancy = self.ctx.texture3d((1, 1, 1), 1, b"\x00")
         self.block_occupancy.filter = (moderngl.NEAREST, moderngl.NEAREST)
         self.block_occupancy.use(location=3)
@@ -249,7 +292,7 @@ class Render:
 
         self.load_textures()
 
-        self.CAMERA = Camera([0, 2, 0], self)
+        self.CAMERA = Camera([0, 15, 0], self)
 
         self.set_cursor_pos_callback(self.CAMERA.cursor_move)
 
@@ -367,7 +410,12 @@ class Render:
         return tuple(map(int, arr.min(axis=0))), tuple(map(int, arr.max(axis=0)))
 
     def _occ_stamp_chunk(self, chunk):
-        """Write one chunk's voxels into the persistent CPU volume."""
+        """Write one chunk's voxels into the persistent CPU volume.
+
+        Plain loop on purpose: measured faster than a vectorized fancy-
+        index version at chunk scale (~6700 voxels into a tiny volume;
+        index-array build + broadcast overhead beats the scalar stores).
+        """
         base = self._occ_min
         data = self._occ_data
         bx, by, bz = int(base[0]), int(base[1]), int(base[2])
@@ -428,27 +476,56 @@ class Render:
         self._occ_upload_new_volume(minimum, size, data)
 
     def _occ_full_rebuild(self, world, keys_now):
+        from allBlocks import BIRCH_LEAVE, OAK_LEAVE, WATER
         occupied = set()
-        light_filter = set()
+        filt_parts = []
         for chunk in world.chunks.blocks_list:
-            occupied.update(chunk.blocks.occupied)
-            for block in chunk.blocks.blocks_list:
-                if getattr(block, "block", "") in LIGHT_FILTER_BLOCKS:
-                    light_filter.add(tuple(block.position))
+            try:
+                occ = chunk.blocks.occupied
+            except AttributeError:
+                continue
+            if occ:
+                occupied.update(occ)
+            # Light-filter voxels by texture id (same voxels the old
+            # getattr-per-block loop collected, without the 330k lookups).
+            try:
+                tex = chunk.blocks.textures
+                pos = chunk.blocks.positions
+            except AttributeError:
+                continue
+            if tex and pos:
+                try:
+                    ta = np.asarray(tex, dtype=np.int32)
+                    pa = np.asarray(pos, dtype=np.int32).reshape(-1, 3)
+                except (ValueError, TypeError):
+                    continue
+                if ta.shape[0] != pa.shape[0] or ta.shape[0] == 0:
+                    continue
+                mask = (ta == BIRCH_LEAVE) | (ta == OAK_LEAVE) | (ta == WATER)
+                if bool(mask.any()):
+                    filt_parts.append(pa[mask])
 
         if occupied:
-            minimum = np.min(np.asarray(list(occupied), dtype="i4"), axis=0)
-            maximum = np.max(np.asarray(list(occupied), dtype="i4"), axis=0)
+            all_arr = np.asarray(list(occupied), dtype=np.int32).reshape(-1, 3)
+            minimum = all_arr.min(axis=0)
+            maximum = all_arr.max(axis=0)
             size = maximum - minimum + 1
         else:
+            all_arr = None
             minimum = np.zeros(3, dtype="i4")
             size = np.ones(3, dtype="i4")
 
         data = np.zeros((int(size[2]), int(size[1]), int(size[0])), dtype=np.uint8)
-        for x, y, z in occupied:
-            data[z - minimum[2], y - minimum[1], x - minimum[0]] = 255
-        for x, y, z in light_filter:
-            data[z - minimum[2], y - minimum[1], x - minimum[0]] = 127
+        if all_arr is not None and all_arr.shape[0]:
+            data[all_arr[:, 2] - minimum[2],
+                 all_arr[:, 1] - minimum[1],
+                 all_arr[:, 0] - minimum[0]] = 255
+        if filt_parts:
+            fall = np.concatenate(filt_parts).reshape(-1, 3)
+            if fall.shape[0]:
+                data[fall[:, 2] - minimum[2],
+                     fall[:, 1] - minimum[1],
+                     fall[:, 0] - minimum[0]] = 127
 
         self._occ_data = data
         self._occ_min = np.asarray(minimum, dtype=np.int32)
@@ -479,6 +556,7 @@ class Render:
         iz1 = iz0 + 10
         if ix0 < 0 or iz0 < 0 or ix1 > data.shape[2] or iz1 > data.shape[0]:
             return False
+        _rt0 = time.perf_counter()
         data[iz0:iz1, :, ix0:ix1] = 0
         self._occ_stamp_chunk(chunk)
         try:
@@ -487,6 +565,180 @@ class Render:
         except Exception:
             return False
         self._occ_chunk_bounds[key] = self._occ_chunk_bounds_of(chunk)
+        chunk_time("occupancy-refresh", _rt0)
+        return True
+
+    def remove_chunks_occupancy(self, world, evicted):
+        """Drop evicted chunks' voxels without a world rescan.
+
+        `evicted` is an iterable of (key, occupied) where `occupied` is
+        the chunk's voxel set of (x, y, z) int tuples, captured BEFORE the
+        chunk was removed from the world.
+
+        Each chunk owns disjoint 10-wide columns, so its column box is
+        cleared exactly (nothing kept can live in there). Structure spill
+        (tree/temple blocks outside the chunk's own columns) is cleared
+        voxel-by-voxel, but only when no kept chunk still occupies the
+        voxel: a kept neighbour may own a coincident voxel with its own
+        solid column, which must survive.
+
+        Single GPU upload at the end. Returns True when handled, False
+        when the caller should fall back to update_block_occupancy (no
+        volume yet, box outside the volume, or upload failure).
+        """
+        if self._occ_data is None:
+            return False
+        try:
+            evicted = list(evicted)
+        except TypeError:
+            return False
+        if not evicted:
+            return True
+        data = self._occ_data
+        base = self._occ_min
+        try:
+            bx, by, bz = int(base[0]), int(base[1]), int(base[2])
+        except (TypeError, IndexError, ValueError):
+            return False
+        dz, dy, dx = data.shape
+        items = []
+        for key, occ in evicted:
+            try:
+                kx = int(key[0])
+                kz = int(key[2])
+            except (TypeError, IndexError, ValueError):
+                return False
+            ix0 = kx - bx
+            iz0 = kz - bz
+            if ix0 < 0 or iz0 < 0 or ix0 + 10 > dx or iz0 + 10 > dz:
+                return False
+            items.append((key, kx, kz, ix0, iz0, occ))
+        # Pass 1: clear own column boxes (exact: columns are disjoint, so
+        # no kept chunk can own a voxel in here).
+        for _key, _kx, _kz, ix0, iz0, _occ in items:
+            data[iz0:iz0 + 10, :, ix0:ix0 + 10] = 0
+        # Pass 2: structure spill outside the own box.
+        try:
+            kept = world.chunks.positions_blocks
+        except AttributeError:
+            return False
+        gone = set()
+        for key, _kx, _kz, _ix0, _iz0, _occ in items:
+            try:
+                gone.add((int(key[0]), int(key[1]), int(key[2])))
+            except (TypeError, IndexError, ValueError):
+                return False
+        for _key, kx, kz, _ix0, _iz0, occ in items:
+            try:
+                it = iter(occ) if occ is not None else iter(())
+            except TypeError:
+                return False
+            for v in it:
+                try:
+                    x, y, z = int(v[0]), int(v[1]), int(v[2])
+                except (TypeError, IndexError, ValueError):
+                    continue
+                if kx <= x < kx + 10 and kz <= z < kz + 10:
+                    continue  # own box already cleared
+                if not (0 <= x - bx < dx and 0 <= y - by < dy
+                        and 0 <= z - bz < dz):
+                    # Voxel outside the volume: volume state is suspect,
+                    # fall back to a full rebuild rather than mis-clear.
+                    return False
+                okey = (x // 10 * 10, 0, z // 10 * 10)
+                if okey in gone:
+                    continue  # owner evicted too: its box-clear handled it
+                try:
+                    owner = kept.get(okey)
+                except AttributeError:
+                    return False
+                if owner is not None:
+                    try:
+                        owns = (x, y, z) in owner.blocks.occupied
+                    except (AttributeError, TypeError):
+                        return False
+                    if owns:
+                        continue
+                data[z - bz, y - by, x - bx] = 0
+        for key, _kx, _kz, _ix0, _iz0, _occ in items:
+            try:
+                nkey = (int(key[0]), int(key[1]), int(key[2]))
+            except (TypeError, IndexError, ValueError):
+                continue
+            self._occ_stamped.discard(nkey)
+            self._occ_chunk_bounds.pop(nkey, None)
+        # Compact the volume: evicting the leading edge would otherwise
+        # leave permanent zero padding (unbounded growth while walking
+        # straight: full re-uploads of a ever-wider texture per chunk).
+        # Tight bounds come from the per-chunk stamps (O(chunks), no voxel
+        # rescan); the dropped region is proven air because every kept
+        # voxel (spill included) sits inside some kept chunk's bounds. A
+        # stamped chunk without bounds (vanished mid-update) disables
+        # compaction rather than risk cutting live voxels.
+        # _compact_occupancy uploads itself when it reallocs, so the
+        # plain write below only runs when the volume was untouched.
+        try:
+            compacted = bool(self._compact_occupancy())
+        except Exception:
+            compacted = False
+        if compacted:
+            return True
+        try:
+            self.block_occupancy.write(self._occ_data.tobytes())
+            self.block_occupancy.use(location=3)
+        except Exception:
+            return False
+        return True
+
+    def _compact_occupancy(self):
+        """Crop the volume to the stamped chunks' tight bounds.
+
+        Returns True when it reallocated + uploaded (caller must skip its
+        own write), False when the volume was left untouched. Uses
+        _occ_upload_new_volume (single realloc + upload with refreshed
+        uniforms) when cropping.
+        """
+        data = self._occ_data
+        if data is None:
+            return False
+        if not self._occ_stamped:
+            # Everything evicted (far teleport): drop the whole volume
+            # instead of carrying a giant zero padding. The next chunk-add
+            # regrows from the 1-cell volume via the normal grow path.
+            import numpy as _np
+            empty = _np.zeros((1, 1, 1), dtype=_np.uint8)
+            self._occ_data = empty
+            self._occ_min = _np.asarray([0, 0, 0], dtype=_np.int32)
+            self._occ_chunk_bounds = {}
+            self._occ_upload_new_volume(self._occ_min, (1, 1, 1), empty)
+            return True
+        bounds_vals = []
+        for k in self._occ_stamped:
+            b = self._occ_chunk_bounds.get(k)
+            if b is None:
+                return False
+            bounds_vals.append(b)
+        if not bounds_vals:
+            return False
+        base = self._occ_min
+        bx, by, bz = int(base[0]), int(base[1]), int(base[2])
+        tmin = [min(b[0][a] for b in bounds_vals) for a in range(3)]
+        tmax = [max(b[1][a] for b in bounds_vals) for a in range(3)]
+        dz, dy, dx = data.shape
+        if (tmin[0] <= bx and tmin[1] <= by and tmin[2] <= bz
+                and tmax[0] >= bx + dx - 1 and tmax[1] >= by + dy - 1
+                and tmax[2] >= bz + dz - 1):
+            return False  # volume already tight: plain write by the caller
+        sx0, sy0, sz0 = tmin[0] - bx, tmin[1] - by, tmin[2] - bz
+        sx1, sy1, sz1 = tmax[0] - bx + 1, tmax[1] - by + 1, tmax[2] - bz + 1
+        if sx0 < 0 or sy0 < 0 or sz0 < 0 or sx1 > dx or sy1 > dy or sz1 > dz:
+            return False  # tight box escapes the volume: leave it
+        import numpy as _np
+        minimum = _np.asarray(tmin, dtype=_np.int32)
+        cropped = data[sz0:sz1, sy0:sy1, sx0:sx1].copy()
+        self._occ_data = cropped
+        self._occ_min = minimum
+        self._occ_upload_new_volume(minimum, cropped.shape[::-1], cropped)
         return True
 
     def update_block_occupancy(self, world):
@@ -507,7 +759,20 @@ class Render:
                     chunk = bounds.get(key)
                     if chunk is None:
                         continue
-                    cmin, cmax = self._occ_chunk_bounds_of(chunk)
+                    # Worker-computed bounds travel on the chunk (see
+                    # _finish_payload): reuse avoids a list->array pass
+                    # per added chunk. Edits invalidate the cache (see
+                    # _flush_placements/destroy_block), so a hit is exact.
+                    cmin = cmax = None
+                    try:
+                        cached = getattr(chunk, "_occ_bounds", None)
+                        if cached is not None:
+                            cmin = tuple(map(int, cached[0]))
+                            cmax = tuple(map(int, cached[1]))
+                    except (TypeError, IndexError, ValueError):
+                        cmin = cmax = None
+                    if cmin is None or cmax is None:
+                        cmin, cmax = self._occ_chunk_bounds_of(chunk)
                     new_bounds[key] = (cmin, cmax)
                     if need_min is None:
                         need_min = list(cmin)
@@ -585,7 +850,7 @@ class InstancedModel:
             !USED BY CHUNKS DUMMIES! is_chunk_dummy
         """
 
-        self.ctx = kwargs["render"].ctx
+        self.ctx:moderngl.Context = kwargs["render"].ctx
         self.program = kwargs["render"].blocks_program if not kwargs.get("is_chunk_dummy") else kwargs["render"].chunk_program
 
         self.indices = kwargs["indices"]
@@ -624,7 +889,10 @@ class InstancedModel:
         self.instances = np.zeros((0, 4, 4), dtype="f4")
         self.tex_insta = np.zeros((0,), dtype="f4")
 
-    def add_instances(self, positions:list[list[Number]], textures:list[int] | np.ndarray, rotations:list[list[Number]]=[]):
+        self.active_instances = np.zeros((0, 4, 4), dtype="f4")
+        self.active_tex_insta = np.zeros((0,), dtype="f4")
+
+    def add_instances(self, positions:list[list[Number]], textures:list[int] | np.ndarray, rotations:list[list[Number]]=[], upload=True):
 
         if not isinstance(positions, np.ndarray):
             positions = np.asarray(positions, dtype='f4')
@@ -651,73 +919,139 @@ class InstancedModel:
 
         self.tex_insta = np.concatenate((self.tex_insta, np.array(textures, dtype="f4")))
 
-        self.instance_buffer.orphan(len(self.instances.tobytes()))
-        self.instance_buffer.write(self.instances.tobytes())
+        # New instances are visible by default: mirror them into the
+        # active (rendered) subset. self.instances/self.tex_insta stay
+        # the full master list even when instances are hidden.
+        self.active_instances = np.concatenate((self.active_instances, new_models))
 
-        layer_bytes = self.tex_insta.astype('i4').tobytes()
-        self.layer_buffer.orphan(len(layer_bytes))
-        self.layer_buffer.write(layer_bytes)
+        self.active_tex_insta = np.concatenate((self.active_tex_insta, np.array(textures, dtype="f4")))
 
-    def remove_instance(self, i):
+        if upload:
+            self._upload()
+
+    def remove_instance(self, i, upload=True):
         """Remove an instance at the given indx"""
+        removed_model = self.instances[i].copy()
+        removed_tex = self.tex_insta[i].copy()
+
         self.instances = np.delete(self.instances, i, axis=0)
         self.tex_insta = np.delete(self.tex_insta, i, axis=0)
 
-        self._upload()
+        # Keep the visible subset in sync: drop one matching entry.
+        for j in range(len(self.active_instances)):
+            if self.active_tex_insta[j] == removed_tex and np.array_equal(self.active_instances[j], removed_model):
+                self.active_instances = np.delete(self.active_instances, j, axis=0)
+                self.active_tex_insta = np.delete(self.active_tex_insta, j, axis=0)
+                break
 
-    def remove_instances(self, positions):
-        """Remove instances whose model translations match the given positions."""
+        if upload:
+            self._upload()
+
+    def remove_instances(self, positions, upload=True):
+        """Remove instances whose model translations match the given positions.
+
+        Pass upload=False when the caller (e.g. World render/cull paths)
+        uploads once afterwards -- otherwise every call re-uploads the
+        full instance buffers by itself.
+        """
         if len(positions) == 0:
             return 0
 
-        positions = np.asarray(positions, dtype="f4")
-        if positions.ndim == 1:
-            positions = positions.reshape(1, 3)
-
-        requested = {tuple(position) for position in positions}
-        instance_positions = self.instances[:, 3, :3]
-        remove_mask = np.array(
-            [tuple(position) in requested for position in instance_positions],
-            dtype=bool,
-        )
+        remove_mask = _position_match_mask(self.instances[:, 3, :3], positions)
         removed = int(np.count_nonzero(remove_mask))
 
         if removed:
             self.instances = self.instances[~remove_mask]
             self.tex_insta = self.tex_insta[~remove_mask]
-            self._upload()
+
+            if len(self.active_instances):
+                active_mask = _position_match_mask(self.active_instances[:, 3, :3], positions)
+                if np.any(active_mask):
+                    self.active_instances = self.active_instances[~active_mask]
+                    self.active_tex_insta = self.active_tex_insta[~active_mask]
+
+            if upload:
+                self._upload()
 
         return removed
 
     def _upload(self):
-        self.instance_buffer.orphan(len(self.instances.tobytes()))
-        self.instance_buffer.write(self.instances.tobytes())
+        self.instance_buffer.orphan(len(self.active_instances.tobytes()))
+        self.instance_buffer.write(self.active_instances.tobytes())
 
-        layer_bytes = self.tex_insta.astype('i4').tobytes()
+        layer_bytes = self.active_tex_insta.astype('i4').tobytes()
         self.layer_buffer.orphan(len(layer_bytes))
         self.layer_buffer.write(layer_bytes)
 
-    def _upload(self):
-        self.instance_buffer.orphan(len(self.instances.tobytes()))
-        self.instance_buffer.write(self.instances.tobytes())
+    def set_visible(self, position_or_visible, value=None):
+        """Per-instance visibility toggle plus whole-model show/hide.
 
-        layer_bytes = self.tex_insta.astype('i4').tobytes()
-        self.layer_buffer.orphan(len(layer_bytes))
-        self.layer_buffer.write(layer_bytes)
+        Called with a single bool (``set_visible(True/False)``) this is
+        the whole-model show/hide switch (mobile parity: detaches canvas
+        objects there). Desktop redraws from scratch every frame, so that
+        is only state; Menus.activate/deactivate drive it on both builds
+        uniformly.
 
-    def set_visible(self, visible):
-        """Show/hide switch (mobile parity: detaches canvas objects there).
-
-        Desktop redraws from scratch every frame, so this is only state;
-        Menus.activate/deactivate drive it on both builds uniformly.
+        Called with ``(position, value)`` it toggles individual
+        instances: ``self.instances``/``self.tex_insta`` always keep the
+        full master list, while ``self.active_instances``/
+        ``self.active_tex_insta`` hold the visible subset that is
+        uploaded/rendered. ``value=True`` puts the master entries at
+        ``position`` into the active subset (if not already there);
+        ``value=False`` removes them from the active subset (master
+        untouched in both cases).
         """
-        self._hidden = not bool(visible)
+        if value is None:
+            self._hidden = not bool(position_or_visible)
+            return
+
+        position = position_or_visible
+        visible = bool(value)
+
+        positions = np.asarray(position, dtype="f4")
+        if positions.ndim == 1:
+            positions = positions.reshape(1, 3)
+
+        if len(self.instances) == 0:
+            return
+
+        if visible:
+            # Add every master entry at the requested positions that is
+            # not already in the active subset (exact matrix+texture
+            # match, so rotated duplicates at one position all restore).
+            candidates = _position_match_mask(self.instances[:, 3, :3], positions)
+            if not np.any(candidates):
+                return
+            active_keys = {(m.tobytes(), float(t)) for m, t in zip(self.active_instances, self.active_tex_insta)}
+            to_add_models = []
+            to_add_tex = []
+            for idx in np.nonzero(candidates)[0]:
+                if (self.instances[idx].tobytes(), float(self.tex_insta[idx])) not in active_keys:
+                    to_add_models.append(self.instances[idx])
+                    to_add_tex.append(self.tex_insta[idx])
+            if to_add_models:
+                self.active_instances = np.concatenate(
+                    (self.active_instances, np.stack(to_add_models).astype("f4"))
+                )
+                self.active_tex_insta = np.concatenate(
+                    (self.active_tex_insta, np.array(to_add_tex, dtype="f4"))
+                )
+                self._upload()
+        else:
+            if len(self.active_instances) == 0:
+                return
+            hide_mask = _position_match_mask(self.active_instances[:, 3, :3], positions)
+            if np.any(hide_mask):
+                self.active_instances = self.active_instances[~hide_mask]
+                self.active_tex_insta = self.active_tex_insta[~hide_mask]
+                self._upload()
 
     def render(self):
         if getattr(self, "_hidden", False):
             return
-        if len(self.instances) == 0: return
-        self.vao.render(instances=len(self.instances))
+        if len(self.active_instances) == 0: return
+
+        self.vao.render(instances=len(self.active_instances))
 
 
 class Model:
@@ -772,6 +1106,25 @@ class Model:
 def get_key(window, key):
     return glfw.get_key(window, key)
 
+def do_thing(x):
+    for idx, y in enumerate(x):
+        if y > 0:
+            x[idx] = 1 - y
+
+        elif y < 0:
+            x[idx] = - (1 - abs(y))
+
+    return x
+
+def do_thing2(x):
+    if x > 0:
+        x = 1 - x
+
+    elif x < 0:
+        x = - (1 - abs(x))
+
+    return x
+
 class Camera:
     def __init__(self, position, render: Render):
         self.render = render
@@ -791,10 +1144,10 @@ class Camera:
         self.dx = 0
         self.dy = 0
 
-        self.sensitivity = 0.1
+        self.sensitivity = 0.2
         self.speed = 5
 
-        self.gravity = 20
+        self.gravity = 1.8
 
         self.fly = False
 
@@ -802,7 +1155,7 @@ class Camera:
 
         self.max_jumps = 1
 
-        self.jump_strenght = 10
+        self.jump_strenght = 12
 
         self.jumps = 0
 
@@ -813,6 +1166,8 @@ class Camera:
         self.up = np.array([0, 1, 0], dtype='f4')
 
         self.vel_y = 0.0
+        self.vel_x = 0.0
+        self.vel_z = 0.0
         self.on_ground = False
 
         self.eye_pos = self.position + np.array(
@@ -842,7 +1197,7 @@ class Camera:
         self.last_x = x
         self.last_y = y
 
-    def update(self, occupied):
+    def update(self, occupied, world):
         yaw = math.radians(self.yaw)
         pitch = math.radians(self.pitch)
 
@@ -894,11 +1249,7 @@ class Camera:
 
         self.speed = (
             13 if self.sprint else 30 if self.fly else 7
-        )
-
-        if get_key(self.render.window, glfw.KEY_R):
-            self.position = self.start_pos.copy()
-        
+        )        
 
         if get_key(self.render.window, glfw.KEY_W):
             move += (self.go if not self.fly else self.front) * self.render.dt * self.speed
@@ -919,8 +1270,21 @@ class Camera:
         if self.on_ground:
             self.jumps = 0
             self.trust_me = True
+    
 
-        self.vel_y -= self.gravity * self.render.dt
+        point_to_world_center = world.origin - self.position
+
+        point_to_world_center /= np.linalg.norm(point_to_world_center)
+
+        distance_from_world_center = clip(distance(point_to_world_center, self.position) / (world.radius * 1.1), 1, -1)
+
+        self.vel_x *= 0.95
+        self.vel_y *= 0.95
+        self.vel_z *= 0.95
+
+        self.vel_x += point_to_world_center[0] * self.gravity * do_thing2(distance_from_world_center)
+        self.vel_y += point_to_world_center[1] * self.gravity * do_thing2(distance_from_world_center)
+        self.vel_z += point_to_world_center[2] * self.gravity * do_thing2(distance_from_world_center)
 
         if get_key(self.render.window, glfw.KEY_SPACE) and (self.on_ground or self.jumps < self.max_jumps) and self.trust_me:
             self.vel_y = self.jump_strenght 
@@ -929,16 +1293,27 @@ class Camera:
 
         if get_key(self.render.window, glfw.KEY_SPACE) != glfw.PRESS: self.trust_me = True
 
+        dx = self.vel_x * self.render.dt
         dy = self.vel_y * self.render.dt
+        dz = self.vel_z * self.render.dt
 
         if self.fly:
             dy = 0
+            dx, dz = 0, 0
+            self.vel_x = 0
             self.vel_y = 0
+            self.vel_z = 0
 
-        move[1] += dy
+        move += [dx, dy, dz]
+
+        prev_pos = self.position.copy()
 
         #collision
         self.try_move(move, occupied)
+
+        moved_by = self.position - prev_pos
+
+        self.bps = round(np.sum(np.abs(1/self.render.dt*moved_by)), 2) #bps
 
         # --------------------
         # View matrix
@@ -1038,7 +1413,7 @@ def load_obj(file_path:str):
 
 CUBE_MODEL_INFO = load_obj("assets/models/block.obj")
 
-CHARSET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890:!? ."
+CHARSET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890:!? .-"
 
 class InstancedText:
     def __init__(self, **kwargs):

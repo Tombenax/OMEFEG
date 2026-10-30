@@ -90,6 +90,43 @@ def distance(first: list[Number], second: list[Number]):
     )
 
 
+def _position_match_mask(instance_positions, requested):
+    """Boolean mask over instance_positions rows matching requested rows.
+
+    Integer fast path when every requested coord is integral and inside
+    the int32 packing range (packs to one int64 key per row, matched
+    with vectorized isin -- ~4x faster than per-row tuple hashing at
+    100k+ instances). Falls back to exact float tuple matching otherwise
+    (rotated/non-integral content), so results are always identical.
+    Non-integral master rows can never equal integral requested tuples,
+    so skipping them on the fast path is exact, not approximate.
+    """
+    inst = np.ascontiguousarray(instance_positions, dtype="f4").reshape(-1, 3)
+    if len(inst) == 0:
+        return np.zeros((0,), dtype=bool)
+    req = np.ascontiguousarray(requested, dtype="f4").reshape(-1, 3)
+    if len(req) == 0:
+        return np.zeros((len(inst),), dtype=bool)
+
+    OFF, S, LIM = 300000, 524288, 224000
+    try:
+        req_i = req.astype(np.int32)
+        if bool((req == req_i).all()) and bool(np.abs(req_i).max(initial=0) <= LIM):
+            mi = inst.astype(np.int32)
+            whole = (inst == mi).all(axis=1)
+            if bool(np.abs(mi[whole]).max(initial=0) <= LIM):
+                mk = ((mi[:, 0].astype(np.int64) + OFF) * S + (mi[:, 1].astype(np.int64) + OFF)) * S + (mi[:, 2].astype(np.int64) + OFF)
+                ek = ((req_i[:, 0].astype(np.int64) + OFF) * S + (req_i[:, 1].astype(np.int64) + OFF)) * S + (req_i[:, 2].astype(np.int64) + OFF)
+                mask = np.zeros((len(inst),), dtype=bool)
+                mask[whole] = np.isin(mk[whole], ek)
+                return mask
+    except (ValueError, OverflowError):
+        pass
+
+    requested_set = {tuple(p) for p in req}
+    return np.array([tuple(p) in requested_set for p in inst], dtype=bool)
+
+
 # ---------------------------------------------------------------------------
 # Kivy imports (only Kivy + numpy + pillow + pyrr are required)
 # ---------------------------------------------------------------------------
@@ -604,6 +641,11 @@ class InstancedModel:
         self.instances = np.zeros((0, 4, 4), dtype="f4")
         self.tex_insta = np.zeros((0,), dtype="f4")
 
+        # Visible subset of the master lists above; only this is merged
+        # into vertices_all / drawn. Mirrors Render.py.
+        self.active_instances = np.zeros((0, 4, 4), dtype="f4")
+        self.active_tex_insta = np.zeros((0,), dtype="f4")
+
         self.vertices_all = np.zeros((0, 8), dtype=np.float32)
         self.indices_all = np.zeros((0,), dtype=np.int32)
         self._dirty = True
@@ -624,13 +666,7 @@ class InstancedModel:
         # RenderContext; re-showing re-attaches it (never rebuilt).
         self._hidden = False
 
-    def set_visible(self, visible):
-        """Show/hide without destroying GPU state. Idempotent.
-
-        Drives Menus.activate/deactivate (OMEFEG.py): Kivy canvases keep
-        drawing everything ever attached, so this detach/re-attach is
-        what actually hides a menu (not calling render() is not enough).
-        """
+    def _set_whole_visible(self, visible):
         visible = bool(visible)
         self._hidden = not visible
         try:
@@ -648,11 +684,69 @@ class InstancedModel:
         except Exception:
             pass
 
+    def set_visible(self, position_or_visible, value=None):
+        """Show/hide without destroying GPU state. Idempotent.
+
+        Called with a single bool (``set_visible(True/False)``) this
+        drives Menus.activate/deactivate (OMEFEG.py): Kivy canvases keep
+        drawing everything ever attached, so this detach/re-attach is
+        what actually hides a menu (not calling render() is not enough).
+
+        Called with ``(position, value)`` it toggles individual
+        instances: ``self.instances``/``self.tex_insta`` always keep the
+        full master list, while ``self.active_instances``/
+        ``self.active_tex_insta`` hold the visible subset that is merged
+        and drawn. ``value=True`` puts the master entries at ``position``
+        into the active subset (if not already there); ``value=False``
+        removes them from the active subset (master untouched).
+        """
+        if value is None:
+            self._set_whole_visible(position_or_visible)
+            return
+
+        positions = np.asarray(position_or_visible, dtype="f4")
+        if positions.ndim == 1:
+            positions = positions.reshape(1, 3)
+
+        visible = bool(value)
+
+        if len(self.instances) == 0:
+            return
+
+        if visible:
+            candidates = _position_match_mask(self.instances[:, 3, :3], positions)
+            if not np.any(candidates):
+                return
+            active_keys = {(m.tobytes(), float(t)) for m, t in zip(self.active_instances, self.active_tex_insta)}
+            to_add_models = []
+            to_add_tex = []
+            for idx in np.nonzero(candidates)[0]:
+                if (self.instances[idx].tobytes(), float(self.tex_insta[idx])) not in active_keys:
+                    to_add_models.append(self.instances[idx])
+                    to_add_tex.append(self.tex_insta[idx])
+            if to_add_models:
+                self.active_instances = np.concatenate(
+                    (self.active_instances, np.stack(to_add_models).astype("f4"))
+                )
+                self.active_tex_insta = np.concatenate(
+                    (self.active_tex_insta, np.array(to_add_tex, dtype="f4"))
+                )
+                self._upload()
+        else:
+            if len(self.active_instances) == 0:
+                return
+            hide_mask = _position_match_mask(self.active_instances[:, 3, :3], positions)
+            if np.any(hide_mask):
+                self.active_instances = self.active_instances[~hide_mask]
+                self.active_tex_insta = self.active_tex_insta[~hide_mask]
+                self._upload()
+
     # -- instance bookkeeping (identical math to Render.py) -----------------
 
     def add_instances(self, positions: list[list[Number]],
                       textures: list[int] | np.ndarray,
-                      rotations: list[list[Number]] = []):
+                      rotations: list[list[Number]] = [],
+                      upload=True):
         if not isinstance(positions, np.ndarray):
             positions = np.asarray(positions, dtype="f4")
 
@@ -680,36 +774,59 @@ class InstancedModel:
             (self.tex_insta, np.array(textures, dtype="f4"))
         )
 
-        self._upload()
+        # New instances are visible by default: mirror them into the
+        # active (merged/rendered) subset.
+        self.active_instances = np.concatenate((self.active_instances, new_models))
 
-    def remove_instance(self, i):
+        self.active_tex_insta = np.concatenate(
+            (self.active_tex_insta, np.array(textures, dtype="f4"))
+        )
+
+        if upload:
+            self._upload()
+
+    def remove_instance(self, i, upload=True):
         """Remove an instance at the given index"""
+        removed_model = self.instances[i].copy()
+        removed_tex = self.tex_insta[i].copy()
+
         self.instances = np.delete(self.instances, i, axis=0)
         self.tex_insta = np.delete(self.tex_insta, i, axis=0)
 
-        self._upload()
+        for j in range(len(self.active_instances)):
+            if self.active_tex_insta[j] == removed_tex and np.array_equal(self.active_instances[j], removed_model):
+                self.active_instances = np.delete(self.active_instances, j, axis=0)
+                self.active_tex_insta = np.delete(self.active_tex_insta, j, axis=0)
+                break
 
-    def remove_instances(self, positions):
-        """Remove instances whose model translations match the given positions."""
+        if upload:
+            self._upload()
+
+    def remove_instances(self, positions, upload=True):
+        """Remove instances whose model translations match the given positions.
+
+        Pass upload=False when the caller (e.g. World render/cull paths)
+        uploads once afterwards -- otherwise every call re-merges the
+        full mesh by itself (on mobile that merge is the expensive part).
+        """
         if len(positions) == 0:
             return 0
 
-        positions = np.asarray(positions, dtype="f4")
-        if positions.ndim == 1:
-            positions = positions.reshape(1, 3)
-
-        requested = {tuple(position) for position in positions}
-        instance_positions = self.instances[:, 3, :3]
-        remove_mask = np.array(
-            [tuple(position) in requested for position in instance_positions],
-            dtype=bool,
-        )
+        remove_mask = _position_match_mask(self.instances[:, 3, :3], positions)
         removed = int(np.count_nonzero(remove_mask))
 
         if removed:
             self.instances = self.instances[~remove_mask]
             self.tex_insta = self.tex_insta[~remove_mask]
-            self._upload()
+
+            if len(self.active_instances):
+                active_mask = _position_match_mask(self.active_instances[:, 3, :3], positions)
+                if np.any(active_mask):
+                    self.active_instances = self.active_instances[~active_mask]
+                    self.active_tex_insta = self.active_tex_insta[~active_mask]
+
+            if upload:
+                self._upload()
 
         return removed
 
@@ -720,8 +837,8 @@ class InstancedModel:
         verts, inds = merge_instances(
             self.vertices,
             self.indices,
-            self.instances,
-            self.tex_insta,
+            self.active_instances,
+            self.active_tex_insta,
             tile_w,
             tile_h,
             atlas_w,
@@ -843,7 +960,7 @@ class InstancedModel:
     def render(self):
         if getattr(self, "_hidden", False):
             return
-        if len(self.instances) == 0 and self.vertices_all.shape[0] == 0:
+        if len(self.active_instances) == 0 and self.vertices_all.shape[0] == 0:
             if self._rc is not None and self._visible:
                 try:
                     self._render._set_rc_visible(self._rc, False)
@@ -1920,7 +2037,7 @@ class Render:
     FOV = FOV
 
     PROJECTION = np.array(
-        Matrix44.perspective_projection(FOV, WIDTH / HEIGHT, 0.1, 1000),
+        Matrix44.perspective_projection(FOV, WIDTH / HEIGHT, 0.1, 100),
         dtype="f4",
     )
 
@@ -1967,7 +2084,7 @@ class Render:
         self._win_w, self._win_h = WIDTH, HEIGHT
         self.PROJECTION = np.array(
             Matrix44.perspective_projection(
-                self.FOV, WIDTH / HEIGHT, 0.1, 1000
+                self.FOV, WIDTH / HEIGHT, 0.1, 100
             ),
             dtype="f4",
         )
@@ -2645,7 +2762,7 @@ class Render:
             pass
         self.PROJECTION = np.array(
             Matrix44.perspective_projection(
-                self.FOV, width / height, 0.1, 1000
+                self.FOV, width / height, 0.1, 100
             ),
             dtype="f4",
         )

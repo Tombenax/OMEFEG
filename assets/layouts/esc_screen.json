@@ -12,14 +12,16 @@
       "pos": [
         640,
         306
-      ]
+      ],
+      "callback": "close_esc_screen"
     },
     {
       "text": "Save and Quit",
       "pos": [
         640,
         406
-      ]
+      ],
+      "callback": "save_and_quit"
     },
     {
       "text": "Settings",
@@ -30,12 +32,12 @@
       "callback": "open_settings"
     },
     {
-      "text": "Back",
+      "text": "Hide",
       "pos": [
         640,
         606
       ],
-      "callback": "close_esc_screen"
+      "callback": "hide"
     }
   ]
 }

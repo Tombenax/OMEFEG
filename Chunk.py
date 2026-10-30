@@ -1,6 +1,8 @@
 from random import Random
 
-from utils import generate_terrain, export_and_load_chunk
+import time
+
+from utils import generate_terrain, export_and_load_chunk, chunk_time
 from Block import Block
 from allBlocks import *
 import os
@@ -37,8 +39,18 @@ class Chunk:
         self.model:Model = Model(self.render)
         self.model.add_model("block", vertices=CUBE_MODEL_INFO[0], indices=CUBE_MODEL_INFO[1])
 
+        # Block instances upload lazily (see ensure_block_instances):
+        # only the chunk the player stands in ever draws them, so the
+        # ~0.5MB instance upload for every other chunk is deferred until
+        # first enter/edit. Refs, not copies (live lists).
+        self._deferred_block_instances = None
+        self._block_instances_ready = True
+
         if not kwargs.get("empty"):
-            self.model.add_instances(self.blocks.positions, self.blocks.textures, "block")
+            if self.blocks.positions and self.blocks.textures:
+                self._deferred_block_instances = (
+                    self.blocks.positions, self.blocks.textures)
+                self._block_instances_ready = False
 
             vertices, indices = export_and_load_chunk(self.blocks.positions, self.blocks.textures, CUBE_MODEL_INFO, TEXTURES_X, TEXTURES_Y)
 
@@ -49,6 +61,14 @@ class Chunk:
         self.is_player_in = False
 
         self.prev_is_player_in = False
+
+        # Save dirty flag: True only when RAM voxels differ from what
+        # regeneration (fresh terrain) or the save file (disk loads)
+        # would produce -- i.e. after edits. Fresh chunks start clean
+        # because regen is bit-stable (frozen biome bands + per-chunk
+        # RNG), so evicting pristine terrain never touches the disk.
+        # Fail-safe default: unknown chunks are treated as dirty.
+        self._save_dirty = False
 
         # Dummy mesh is rebuilt lazily: edits set _dummy_dirty, render_mesh
         # rebuilds at most once (old code rebuilt the full merged mesh
@@ -65,10 +85,40 @@ class Chunk:
         chunk.blocks = BlocksList()
         chunk.position = list(position)
         chunk.render = render
-        chunk.blocks.extend(payload["blocks"])
+        # Workers index the list off-thread: adopt it instead of re-walking
+        # ~6700 blocks on the main thread. Legacy payloads without one
+        # fall back to extend.
+        _bl = payload.get("blocks_list")
+        if _bl is not None:
+            chunk.blocks = _bl
+        else:
+            chunk.blocks.extend(payload["blocks"])
+        # Adopt worker-computed voxel bounds for the occupancy volume
+        # (see update_block_occupancy). Edits invalidate it below.
+        try:
+            chunk._occ_bounds = payload.get("bounds")
+        except AttributeError:
+            chunk._occ_bounds = None
         chunk.model = Model(render)
         chunk.model.add_model("block", vertices=CUBE_MODEL_INFO[0], indices=CUBE_MODEL_INFO[1])
-        chunk.model.add_instances(chunk.blocks.positions, chunk.blocks.textures, "block")
+        # Reuse worker-built numpy arrays when present (avoids a second
+        # list->ndarray conversion of the same ~600 positions/textures).
+        # Upload itself is deferred (see ensure_block_instances).
+        _pos = payload.get("positions")
+        _tex = payload.get("textures")
+        if _pos is None:
+            _pos = chunk.blocks.positions
+        if _tex is None:
+            _tex = chunk.blocks.textures
+        chunk._deferred_block_instances = None
+        chunk._block_instances_ready = True
+        try:
+            _has = len(_pos) > 0 and len(_tex) > 0
+        except TypeError:
+            _has = False
+        if _has:
+            chunk._deferred_block_instances = (_pos, _tex)
+            chunk._block_instances_ready = False
         chunk.model.add_model(
             "dummy",
             vertices=payload["dummy_vertices"],
@@ -79,6 +129,49 @@ class Chunk:
         chunk.is_player_in = False
         chunk.prev_is_player_in = False
         chunk._dummy_dirty = False
+        # Fresh payloads are clean by default: worker bakes regenerate
+        # bit-identically, and from_save bytes are already on disk.
+        # Edits mark dirty (see _flush_placements/destroy_block).
+        chunk._save_dirty = False
+        return chunk
+
+    @classmethod
+    def from_blocks(cls, render, position, blocks):
+        """Build a GL-ready chunk from already-loaded Block objects.
+
+        Fast path for save-file loads: single extend + single instance
+        upload + single dummy mesh (the old _build_chunk_from_blocks did
+        extend, then add_instances(list->ndarray), then _update_dummy
+        which re-converted the same lists a second time).
+        """
+        from utils import export_and_load_chunk as _export
+        chunk = cls.__new__(cls)
+        chunk.blocks = BlocksList()
+        chunk.position = list(position)
+        chunk.render = render
+        chunk.model = Model(render)
+        chunk.model.add_model("block", vertices=CUBE_MODEL_INFO[0], indices=CUBE_MODEL_INFO[1])
+        chunk._deferred_block_instances = None
+        chunk._block_instances_ready = True
+        if blocks:
+            chunk.blocks.extend(blocks)
+            _positions = chunk.blocks.positions
+            _textures = chunk.blocks.textures
+            if _positions and _textures:
+                chunk._deferred_block_instances = (_positions, _textures)
+                chunk._block_instances_ready = False
+            _verts, _inds = _export(
+                _positions, _textures, CUBE_MODEL_INFO,
+                TEXTURES_X, TEXTURES_Y)
+            chunk.model.add_model(
+                "dummy", vertices=_verts, indices=_inds,
+                is_chunk_dummy=True)
+            chunk.model.add_instances([[0, 0, 0]], [0], "dummy")
+        chunk.is_player_in = False
+        chunk.prev_is_player_in = False
+        chunk._dummy_dirty = False
+        # from_blocks is only used for disk loads: bytes already on disk.
+        chunk._save_dirty = False
         return chunk
 
     def release(self):
@@ -114,7 +207,35 @@ class Chunk:
     def mark_dummy_dirty(self):
         self._dummy_dirty = True
 
+    def ensure_block_instances(self):
+        """Upload deferred block instances. Main (GL) thread only.
+
+        Chunks are built with the instance upload deferred (only the
+        player's own chunk ever draws them); the first enter or the
+        first edit materializes them from the live position/texture
+        lists. No-op when already uploaded or when legacy state is
+        missing (fail-safe: behaves like the old eager upload path by
+        doing nothing extra).
+        """
+        if getattr(self, "_block_instances_ready", True):
+            return
+        self._block_instances_ready = True
+        deferred = getattr(self, "_deferred_block_instances", None)
+        self._deferred_block_instances = None
+        if not deferred:
+            return
+        try:
+            pos, tex = deferred
+            if pos is None or tex is None:
+                return
+            if len(pos) == 0 or len(tex) == 0:
+                return
+            self.model.add_instances(pos, tex, "block")
+        except Exception:
+            pass
+
     def _update_dummy(self):
+        _dt0 = time.perf_counter()
 
         vertices, indices = export_and_load_chunk(self.blocks.positions, self.blocks.textures, CUBE_MODEL_INFO, TEXTURES_X, TEXTURES_Y)
 
@@ -125,6 +246,7 @@ class Chunk:
         self.model.add_instances([[0, 0, 0]], [0], "dummy")
 
         self._dummy_dirty = False
+        chunk_time("dummy-rebuild", _dt0)
 
     def render_mesh(self):
         if self.is_player_in != self.prev_is_player_in:
@@ -136,7 +258,12 @@ class Chunk:
             if self._dummy_dirty:
                 self._update_dummy()
 
-        if self.is_player_in: self.model.render_one("block")
+        if self.is_player_in:
+            try:
+                self.ensure_block_instances()
+            except Exception:
+                pass
+            self.model.render_one("block")
         else:
             if "dummy" in self.model.instanedmodels and not self._dummy_dirty:
                 self.model.render_one("dummy")
@@ -151,8 +278,11 @@ class Chunk:
         return self.get_block_pos_at(x, z)[1] + 1
 
     def get_block_pos_at(self, x:Number, z:Number) -> list[Number]:
-        arr = np.array(self.blocks.positions)
-        return list(arr[(arr[:, 0] == x) & (arr[:, 2] == z)][0])
+        try:
+            arr = np.array(self.blocks.positions)
+            return list(arr[(arr[:, 0] == x) & (arr[:, 2] == z)][0])
+        except IndexError:
+            return [x, 100, z]
 
     def get_block_at(self, position:list[Number]):
         try:

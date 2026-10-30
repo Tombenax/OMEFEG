@@ -15,6 +15,7 @@ OAK_PLANKS = 7
 SAND = 8
 STONE = 9
 WATER = 10
+UNBREKABLE = 14
 
 
 
@@ -92,3 +93,7 @@ class Water(Block):
 class Cobblestone(Block):
     def __init__(self, position: list[float | int]):
         super().__init__("cobblestone", position, COBBLESTONE, {0:None}, True)
+
+class Unbrekable(Block):
+    def __init__(self, position: list[float | int]):
+        super().__init__("unbrekable", position, UNBREKABLE, {0:None}, True)

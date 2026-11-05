@@ -72,3 +72,10 @@ So, for who downloads th code and runs it (including me) here's how to run 2 ver
 - Desktop: run it on your pc by doing (in powershell) $env:OMEFEG_DESKTOP = '1' and then python OMEFEG.py
 
 - Mobile: in powershell run $env:OMEFEG_DESKTOP = '0' and then python OMEFEG.py
+
+#
+### BLENDER SUPPORT
+There is blender support, you have to supply .blend files to blender_export.py and us thm with BlenderModel.py
+## HOW TU USE (bc i'm gonna forget)
+create a Model,
+call the function "attach_blender_model" and specify the model

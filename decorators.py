@@ -4,6 +4,7 @@ import ast
 import inspect
 import textwrap
 import threading
+from time import time
 
 # Chunk generation now runs on worker threads; the remaining @cache users
 # (generate_tree, square_range, ...) share this dict, so guard it.
@@ -69,6 +70,36 @@ def cache(func):
         
 
     return inner
+
+last_key = None
+last_result = None
+
+def cache_raycast(func):
+
+    should = classify_returns(func) == "return_value"
+
+    def inner(*args, **kwargs):
+
+        global last_key, last_result
+
+        if should:
+
+            key = args
+
+            if not key == last_key:
+                result = func(*args, **kwargs)
+                last_key = key
+                last_result = result
+
+                print("RECALL")
+
+            return last_result
+
+        return func(*args, **kwargs)
+        
+
+    return inner
+
 
 """
 @chace

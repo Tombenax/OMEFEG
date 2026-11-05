@@ -13,6 +13,10 @@ uniform sampler3D blockOccupancy;
 uniform vec3 lightPositions[16];
 uniform vec4 lightColors[16];
 uniform int lightCount;
+uniform float TEXTURE_W;
+uniform float TEXTURE_H;
+uniform float ATLAS_W;
+uniform float ATLAS_H;
 uniform vec3 worldMin;
 uniform ivec3 worldSize;
 uniform vec3 viewPos;
@@ -130,8 +134,43 @@ float skyVisibility(vec3 surface, vec3 normal)
     return lightTransmittance(origin, skyPoint);
 }
 
+vec2 repeatedBlockUV(vec2 atlasUV, vec3 worldPos, vec3 normal)
+{
+    vec2 tileCount = vec2(ATLAS_W / TEXTURE_W, ATLAS_H / TEXTURE_H);
+    vec2 tile = floor(atlasUV * tileCount);
+    vec2 localUV;
+    vec2 faceUVOffset;
+
+    if (abs(normal.z) > 0.5) {
+        localUV = normal.z < 0.0
+            ? vec2(0.5 - worldPos.x, worldPos.y + 0.5)
+            : vec2(worldPos.x + 0.5, worldPos.y + 0.5);
+        faceUVOffset = normal.z < 0.0
+            ? vec2(0.0, 0.75)
+            : vec2(0.25, 0.5);
+    } else if (abs(normal.x) > 0.5) {
+        localUV = normal.x > 0.0
+            ? vec2(0.5 - worldPos.z, worldPos.y + 0.5)
+            : vec2(worldPos.z + 0.5, worldPos.y + 0.5);
+        faceUVOffset = normal.x > 0.0
+            ? vec2(0.0, 0.5)
+            : vec2(0.25, 0.5);
+    } else {
+        localUV = normal.y > 0.0
+            ? vec2(0.5 - worldPos.x, worldPos.z + 0.5)
+            : vec2(worldPos.x + 0.5, worldPos.z + 0.5);
+        faceUVOffset = normal.y > 0.0
+            ? vec2(0.0, 0.25)
+            : vec2(0.5, 0.75);
+    }
+
+    return (tile + faceUVOffset + fract(localUV) * 0.25) / tileCount;
+}
+
 void main() {
-    vec4 tex = texture(atlasArray, vec3(v_uv, v_layer));
+    vec3 norm = normalize(v_normal);
+    vec2 sampleUV = repeatedBlockUV(v_uv, v_fragPos, norm);
+    vec4 tex = texture(atlasArray, vec3(sampleUV, v_layer));
 
     if (tex.a < 0.1)
         discard;
@@ -142,8 +181,6 @@ void main() {
     }
 
     vec3 color = tex.rgb;
-    vec3 norm = normalize(v_normal);
-
     // Ambient is sky light, so occlude it like direct light. Without this,
     // a fully enclosed box still gets 0.35 everywhere (readable, grey).
     // Keep ~30% when occluded: pure 0 made every overhang/tree underside

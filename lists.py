@@ -1,3 +1,8 @@
+from math import floor
+
+from Vec3 import Vec3
+
+
 class BlocksList:
     def __init__(self):
         self.blocks_list = []
@@ -6,15 +11,24 @@ class BlocksList:
         self.occupied = set()
         self.positions = []
         self.textures = []
+        self.positions_by_xz = {}
+
+    def _index_position(self, position):
+        x, _, z = position
+        column = (floor(x), floor(z))
+        self.positions_by_xz.setdefault(column, set()).add(position)
 
     def add(self, block):
         if block is None: return
+        if not isinstance(block.position, Vec3):
+            block.position = Vec3(*block.position)
         self.blocks_list.append(block)
-        self.blocks_positions[block] = list(block.position)
+        self.blocks_positions[block] = block.position
         self.positions_blocks[tuple(block.position)] = block
         self.occupied.add(tuple(block.position))
-        self.positions.append(list(block.position))
+        self.positions.append(block.position)
         self.textures.append(block.texture)
+        self._index_position(tuple(block.position))
 
     def extend(self, blocks):
         # Single pass (was set-comprehension alloc + second loop over the
@@ -36,10 +50,14 @@ class BlocksList:
                 except (TypeError, AttributeError):
                     continue
                 _pos = block.position
+            if not isinstance(_pos, Vec3):
+                _pos = Vec3(*_pos)
+                block.position = _pos
             _bpos[block] = _pos
             _pblocks[_key] = block
             _occ.add(_key)
             _positions.append(_pos)
+            self._index_position(_key)
             try:
                 _textures.append(block.texture)
             except AttributeError:
@@ -82,10 +100,13 @@ class BlocksList:
             if ctor is None:
                 continue
             try:
-                block = ctor([x, y, z])
+                block = ctor(Vec3(x, y, z))
             except Exception:
                 continue
             _pos = block.position
+            if not isinstance(_pos, Vec3):
+                _pos = Vec3(*_pos)
+                block.position = _pos
             _key = (x, y, z)
             _app(block)
             _bpos[block] = _pos
@@ -93,14 +114,26 @@ class BlocksList:
             _occ.add(_key)
             _papp(_pos)
             _tapp(t)
+            self._index_position(_key)
         return self
 
     def remove(self, block):
         self.blocks_list.remove(block)
         self.blocks_positions.pop(block)
-        self.positions_blocks.pop(tuple(block.position))
-        self.occupied.remove(tuple(block.position))
-        position_index = self.positions.index(block.position)
+        key = tuple(block.position)
+        self.positions_blocks.pop(key)
+        self.occupied.remove(key)
+        column = (floor(key[0]), floor(key[2]))
+        column_positions = self.positions_by_xz[column]
+        column_positions.discard(key)
+        if not column_positions:
+            del self.positions_by_xz[column]
+        position_index = next(
+            (i for i, position in enumerate(self.positions) if tuple(position) == key),
+            None,
+        )
+        if position_index is None:
+            raise ValueError(block.position)
         self.positions.pop(position_index)
         self.textures.pop(position_index)
 
@@ -111,6 +144,7 @@ class BlocksList:
         self.occupied.clear()
         self.positions.clear()
         self.textures.clear()
+        self.positions_by_xz.clear()
 
 
 class ChunksList:
@@ -122,6 +156,8 @@ class ChunksList:
         self.positions = []
 
     def add(self, block):
+        if not isinstance(block.position, Vec3):
+            block.position = Vec3(*block.position)
         self.blocks_list.append(block)
         self.blocks_positions[block] = block.position
         self.positions_blocks[tuple(block.position)] = block
@@ -140,19 +176,12 @@ class ChunksList:
             return False
         self.positions_blocks.pop(key, None)
         self.occupied.discard(key)
-        # positions held block.position lists; drop the matching entry so
-        # unloaded chunks don't linger here forever (old code never
-        # removed, leaking one entry per evicted chunk).
-        try:
-            self.positions.remove(block.position)
-        except ValueError:
-            for i, p in enumerate(self.positions):
-                try:
-                    if tuple(p) == key:
-                        del self.positions[i]
-                        break
-                except TypeError:
-                    continue
+        # Drop the matching entry so unloaded chunks don't linger here
+        # forever (old code never removed them).
+        for i, position in enumerate(self.positions):
+            if tuple(position) == key:
+                del self.positions[i]
+                break
         return True
 
     def __getitem__(self, key):

@@ -1,8 +1,11 @@
 import math
+from collections.abc import Sequence
 from random import Random
 import random
 from typing import Callable
-from decorators import cache
+from decorators import cache, cache_raycast
+from Vec3 import Vec3
+from Number import Number
 
 # Structure blueprints loaded once (was open()+readlines()+strip per tree
 # placement; @cache key str(x,y,z,...) never hit since positions unique and
@@ -33,7 +36,7 @@ def _load_structure_blueprint(type: str, folder: str):
     return blueprint
 
 
-def generate_tree(x: int, y: int, z: int, type: str, folder: str):
+def generate_tree(x: int, y: int, z: int, type: str, folder: str) -> dict[str, list]:
     blueprint = _load_structure_blueprint(type, folder)
     if not blueprint:
         return {"positions": [], "textures": []}
@@ -44,7 +47,7 @@ def generate_tree(x: int, y: int, z: int, type: str, folder: str):
     _tapp = textures.append
     _y1 = y + 1
     for dx, dy, dz, block_name in blueprint:
-        _papp((dx + x, dy + _y1, dz + z))
+        _papp(Vec3(dx + x, dy + _y1, dz + z))
         _tapp(block_name)
     return {"positions": positions, "textures": textures}
 
@@ -74,9 +77,9 @@ def chunk_time(label, t0):
 
 MIN_WORLD_Y = -64
 
-def generate_terrain(size=10, height_map=None, biomes_map=None, offsett=[0, 0, 0], rules_:dict[str, int | list[int] | str]={}, random_seed:random.Random=random.Random(random.randint(0, 9_223_372_036_854_775_807)), biomes=True, sin_world=False) -> list[Block]:
+def generate_terrain(size=10, height_map=None, biomes_map=None, offsett:Vec3 | Sequence[Number]=[0, 0, 0], rules_:dict[str, int | list[int] | str]={}, random_seed:random.Random=random.Random(random.randint(0, 9_223_372_036_854_775_807)), biomes=True, sin_world=False) -> list[Block]:
     """
-    Generates terrain as a list of [x, y, z] block positions.
+    Generates terrain as Blocks whose positions are Vec3 values.
     height_map: optional function f(x, z) -> y
     rules: a list of terrain generation rules
 
@@ -85,13 +88,15 @@ def generate_terrain(size=10, height_map=None, biomes_map=None, offsett=[0, 0, 0
     never hit (offsets are unique), leaked every chunk forever, and was
     wrong when random structures were involved.
     """
+    offsett = offsett.copy() if isinstance(offsett, Vec3) else Vec3(*offsett)
+    _ox, _oy, _oz = (int(offsett.x), int(offsett.y), int(offsett.z))
     blocks: list[Block] = []
     trees = []
     can_generate = True
     if biomes:
         # Single HeightMap lookup per chunk (pure function of the coords:
         # frozen bands, no expansion, no locks).
-        bom = rules_["all"][biomes_map[offsett[0], offsett[2]]]
+        bom = rules_["all"][biomes_map[_ox, _oz]]
         rules = rules_[bom]["rules"]
         vegetation = rules_[bom]
     else:
@@ -111,7 +116,6 @@ def generate_terrain(size=10, height_map=None, biomes_map=None, offsett=[0, 0, 0
     _water_set = set(_all_water_ys)
     _top_block = vegetation["topBlock"]  # type: ignore
     _bottom_block = vegetation["bottomBlock"]  # type: ignore
-    _ox, _oy, _oz = offsett[0], offsett[1], offsett[2]
     _use_heightmap = height_map is not None
     # Branch once on formula (was `match` string compare per column).
     # 0=perlinNoise*5, 1=flat, 2=perlinFlat, 3=cone, 4=sin/raw*5.
@@ -167,8 +171,8 @@ def generate_terrain(size=10, height_map=None, biomes_map=None, offsett=[0, 0, 0
     # worlds and makes output depend on scheduling.
     _rnd = random_seed.random
     _sqrt = math.sqrt
-    _x0, _x1 = offsett[0], size + offsett[0]
-    _z0, _z1 = offsett[2], size + offsett[2]
+    _x0, _x1 = _ox, size + _ox
+    _z0, _z1 = _oz, size + _oz
     _thick = _terrain_thickness
     _low = MIN_WORLD_Y
 
@@ -197,8 +201,8 @@ def generate_terrain(size=10, height_map=None, biomes_map=None, offsett=[0, 0, 0
             if y in _water_set:
                 for a in _all_water_ys:
                     if a != y:
-                        _bappend(_water_ctor([x, a, z]))
-                _bappend(_water_ctor([x, y, z]))
+                        _bappend(_water_ctor(Vec3(x, a, z)))
+                _bappend(_water_ctor(Vec3(x, y, z)))
             else:
                 if can_generate and _has_structs:
                     #generate structures
@@ -209,16 +213,16 @@ def generate_terrain(size=10, height_map=None, biomes_map=None, offsett=[0, 0, 0
                                 can_generate = False
                             trees.append(_gen_tree(x, y, z, _sname, _sfolder))
 
-                _bappend(_top_ctor([x, y, z]))
+                _bappend(_top_ctor(Vec3(x, y, z)))
                 for i in range(1, _thick + 1):
-                    _bappend(_bottom_ctor([x, y - i, z]))
+                    _bappend(_bottom_ctor(Vec3(x, y - i, z)))
                 for i in range(_low + 1, y - _thick):
-                    _bappend(_stone_ctor([x, i, z]))
+                    _bappend(_stone_ctor(Vec3(x, i, z)))
                 # Bedrock floor: plain stone. It is unbreakable because
                 # World.destroy_block refuses y <= MIN_WORLD_Y, so no
                 # separate block type is needed (a new type would require
                 # a texture id, an atlas tile and a save-format entry).
-                _bappend(_stone_ctor([x, _low, z]))
+                _bappend(_stone_ctor(Vec3(x, _low, z)))
 
     # Structures resolve names per block (few hundred, varied types).
     _get_block = get_block
@@ -372,7 +376,7 @@ def closest_range(start:int, stop:int, step:int=1) -> list[int]:
 
 @cache
 def square_range(center, layers: int, step: int = 1) -> list[list[int]]:
-    cx, _, cy = center
+    cx, _, cy = (int(value) for value in center)
     result = [[cx, cy]]
 
     for r in range(layers + 1):
@@ -385,6 +389,76 @@ def square_range(center, layers: int, step: int = 1) -> list[list[int]]:
                     ])
 
     return result
+
+"""
+#generate quare rang algorithm lookup
+
+layers = 3
+
+thing = "["
+for x in range(layers*2+1):
+    x -= layers
+    thing += "\n"
+    for z in range(layers*2+1):
+        z -= layers
+        thing += f"Vec3({x}, 0, {z}), "
+
+thing += "\n]"
+print(thing)
+"""
+
+_SQUARE_RANGE_VALUES_1_LAYER = [
+                        Vec3(-1, 0, -1), Vec3(0, 0, -1), Vec3(1, 0, -1),
+                        Vec3(-1, 0, 0), Vec3(0, 0, 0), Vec3(1, 0, 0),
+                        Vec3(-1, 0, 1), Vec3(0, 0, 1), Vec3(1, 0, 1)
+                       ]
+
+_SQUARE_RANGE_VALUES_3_LAYER = [
+                                Vec3(-3, 0, -3), Vec3(-3, 0, -2), Vec3(-3, 0, -1), Vec3(-3, 0, 0), Vec3(-3, 0, 1), Vec3(-3, 0, 2), Vec3(-3, 0, 3), 
+                                Vec3(-2, 0, -3), Vec3(-2, 0, -2), Vec3(-2, 0, -1), Vec3(-2, 0, 0), Vec3(-2, 0, 1), Vec3(-2, 0, 2), Vec3(-2, 0, 3), 
+                                Vec3(-1, 0, -3), Vec3(-1, 0, -2), Vec3(-1, 0, -1), Vec3(-1, 0, 0), Vec3(-1, 0, 1), Vec3(-1, 0, 2), Vec3(-1, 0, 3), 
+                                Vec3(0, 0, -3), Vec3(0, 0, -2), Vec3(0, 0, -1), Vec3(0, 0, 0), Vec3(0, 0, 1), Vec3(0, 0, 2), Vec3(0, 0, 3), 
+                                Vec3(1, 0, -3), Vec3(1, 0, -2), Vec3(1, 0, -1), Vec3(1, 0, 0), Vec3(1, 0, 1), Vec3(1, 0, 2), Vec3(1, 0, 3), 
+                                Vec3(2, 0, -3), Vec3(2, 0, -2), Vec3(2, 0, -1), Vec3(2, 0, 0), Vec3(2, 0, 1), Vec3(2, 0, 2), Vec3(2, 0, 3), 
+                                Vec3(3, 0, -3), Vec3(3, 0, -2), Vec3(3, 0, -1), Vec3(3, 0, 0), Vec3(3, 0, 1), Vec3(3, 0, 2), Vec3(3, 0, 3), 
+                               ]
+
+def square_range_1_layers(center:Vec3, step=1):
+
+    stp_v = Vec3(step, 0, step)
+
+    return [(x * stp_v + center).xz for x in _SQUARE_RANGE_VALUES_1_LAYER]
+
+last_arg = None
+
+def check_and_return(center, step):
+    global last_arg
+
+    args = (center, step)
+
+    if not args == last_arg:
+        last_arg = args
+
+        return True
+
+    return False
+
+
+
+
+def square_range_3_layers(center:Vec3, step=1):
+
+    global last_arg
+
+    if not check_and_return(center, step):
+        return last_arg
+
+    stp_v = Vec3(step, 0, step)
+
+    last_arg = [(x * stp_v + center).xz for x in _SQUARE_RANGE_VALUES_3_LAYER]
+
+    return last_arg
+
 
 # Conservative chunk visibility for render culling (pure math, no GL).
 # A chunk column is 10 wide; voxels span MIN_WORLD_Y..~+30 with the
@@ -468,6 +542,146 @@ _FACE_OFFSETS = ((0, 0, -1), (1, 0, 0), (0, 0, 1), (-1, 0, 0), (0, 1, 0), (0, -1
 # == allBlocks.WATER. Water never occludes (faces touching it stay visible
 # so terrain shows through), but water-water interiors are culled.
 _WATER_TEX = 10
+
+
+def greedy_mesh_blocks(
+    region_blocks: dict[tuple[int, int, int], int],
+    occupied: dict[tuple[int, int, int], int],
+    textures_x: int,
+    textures_y: int,
+    cube_vertices=None,
+    mesh_region_key=None,
+    region_size: int = 16,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Build a greedy, face-culled mesh for one region of axis-aligned blocks."""
+    face_specs = (
+        ((0, 0, -1), 2, -1, 1, 0),
+        ((1, 0, 0), 0, 1, 1, 2),
+        ((0, 0, 1), 2, 1, 0, 1),
+        ((-1, 0, 0), 0, -1, 2, 1),
+        ((0, 1, 0), 1, 1, 2, 0),
+        ((0, -1, 0), 1, -1, 0, 2),
+    )
+    masks: dict[tuple[int, int, int], dict[tuple[int, int], None]] = {}
+    base_faces = None
+    if cube_vertices is not None:
+        base_faces = np.asarray(cube_vertices, dtype=np.float32).reshape(6, 4, 8)
+    for position, texture in region_blocks.items():
+        x, y, z = position
+        for face, (offset, normal_axis, _sign, u_axis, v_axis) in enumerate(face_specs):
+            if (
+                mesh_region_key is not None
+                and position[normal_axis] // region_size != mesh_region_key[normal_axis]
+            ):
+                continue
+            neighbor = (x + offset[0], y + offset[1], z + offset[2])
+            neighbor_texture = occupied.get(neighbor)
+            if neighbor_texture is not None and not (
+                neighbor_texture == _WATER_TEX and texture != _WATER_TEX
+            ):
+                continue
+            if mesh_region_key is not None:
+                # The prior region owns the first connected face cells across a seam.
+                owner = list(position[axis] // region_size for axis in range(3))
+                candidates = [tuple(owner)]
+                boundary_axes = [
+                    axis for axis in (u_axis, v_axis)
+                    if position[axis] % region_size == 0
+                ]
+                for subset in range(1, 1 << len(boundary_axes)):
+                    previous = list(position)
+                    previous_region = owner.copy()
+                    for bit, tangent_axis in enumerate(boundary_axes):
+                        if subset & (1 << bit):
+                            previous[tangent_axis] -= 1
+                            previous_region[tangent_axis] -= 1
+                    if occupied.get(tuple(previous)) != texture:
+                        continue
+                    previous_neighbor = tuple(
+                        previous[axis] + offset[axis] for axis in range(3)
+                    )
+                    previous_neighbor_texture = occupied.get(previous_neighbor)
+                    if previous_neighbor_texture is not None and not (
+                        previous_neighbor_texture == _WATER_TEX
+                        and texture != _WATER_TEX
+                    ):
+                        continue
+                    candidates.append(tuple(previous_region))
+                if min(candidates) != mesh_region_key:
+                    continue
+            mask_key = (face, position[normal_axis], texture)
+            masks.setdefault(mask_key, {})[(position[u_axis], position[v_axis])] = None
+
+    vertices: list[tuple[float, ...]] = []
+    indices: list[int] = []
+    texture_columns = max(int(textures_x), 1)
+    texture_rows = max(int(textures_y), 1)
+    for (face, plane, texture), cells in masks.items():
+        _offset, normal_axis, sign, u_axis, v_axis = face_specs[face]
+        face_uv = None
+        if base_faces is not None:
+            face_uv = {}
+            for vertex in base_faces[face]:
+                corner = (
+                    int(round(float(vertex[u_axis]) * 2)),
+                    int(round(float(vertex[v_axis]) * 2)),
+                )
+                face_uv[corner] = vertex[6:8]
+        rows: dict[int, set[int]] = {}
+        for u, v in cells:
+            rows.setdefault(v, set()).add(u)
+
+        for v0 in sorted(rows):
+            row = rows[v0]
+            for u0 in sorted(row):
+                if u0 not in row:
+                    continue
+                width = 1
+                while u0 + width in row:
+                    width += 1
+                height = 1
+                while v0 + height in rows and all(
+                    u0 + dx in rows[v0 + height] for dx in range(width)
+                ):
+                    height += 1
+                for dy in range(height):
+                    for dx in range(width):
+                        rows[v0 + dy].remove(u0 + dx)
+
+                corners = []
+                for du, dv in ((0, 0), (width, 0), (width, height), (0, height)):
+                    point = [0.0, 0.0, 0.0]
+                    point[normal_axis] = plane + sign * 0.5
+                    point[u_axis] = u0 - 0.5 + du
+                    point[v_axis] = v0 - 0.5 + dv
+                    corners.append(point)
+
+                column = texture % texture_columns
+                texture_row = texture // texture_columns
+                uv_corners = (
+                    face_uv[(-1, -1)] if face_uv is not None else (0.0, 0.0),
+                    face_uv[(1, -1)] if face_uv is not None else (1.0, 0.0),
+                    face_uv[(1, 1)] if face_uv is not None else (1.0, 1.0),
+                    face_uv[(-1, 1)] if face_uv is not None else (0.0, 1.0),
+                )
+                base_index = len(vertices)
+                for point, (u, v) in zip(corners, uv_corners):
+                    vertices.append((
+                        point[0], point[1], point[2],
+                        *face_specs[face][0],
+                        (column + u) / texture_columns,
+                        (texture_row + v) / texture_rows,
+                    ))
+                indices.extend((
+                    base_index, base_index + 1, base_index + 2,
+                    base_index, base_index + 2, base_index + 3,
+                ))
+
+    return (
+        np.asarray(vertices, dtype=np.float32).reshape(-1, 8),
+        np.asarray(indices, dtype=np.int32),
+    )
+
 
 def export_and_load_chunk(models: list[list[int | float]], _layers_, CUBE_MODEL_INFO, TEXTURES_X, TEXTURES_Y):
     """
@@ -695,7 +909,7 @@ TEXTURE_CTORS: tuple[type, ...] = (
 )
 
 
-def get_block(name: str, position: list[float | int]):
+def get_block(name: str, position: Vec3 | Sequence[Number]):
     # No @cache on purpose: positions are unique per block, so the cache
     # never hit and pinned every Block ever created in RAM forever (plus
     # a str() key built per block). Plain factory is faster overall.
@@ -714,7 +928,7 @@ def get_texture(idx: int, x, y, z):
     except (IndexError, TypeError):
         ctor = None
     if ctor is not None:
-        return ctor([x, y, z])
+        return ctor(Vec3(x, y, z))
 
     print(Fore.YELLOW + f"Unrecognized idx: {idx}")
     print(Style.RESET_ALL)
@@ -742,21 +956,22 @@ def string_to_fixed_number(s, digits=10):
     # Limit to a fixed number of digits
     return num % (10 ** digits)
 
-from Number import Number
-
 @cache
 def clip(value:Number, max_:Number, min_:Number) -> Number:
     return max(min(value, max_), min_)
 
 @cache
-def distance(first:list[Number], second:list[Number]):
+def distance(first:Vec3 | Sequence[Number], second:Vec3 | Sequence[Number]):
     return hypot(first[0]-second[0], first[1]-second[1], first[2]-second[2])
 
-def get_accurate_block(pos:list[Number]) -> tuple[Number]:
-    return tuple([floor(axis + 0.5) for axis in pos])
+def get_accurate_block(pos:Vec3) -> Vec3:
+    return Vec3(*[floor(axis + 0.5) for axis in pos.xyz])
 
-@cache
-def raycast(occupied, start, front, max_iterations=10):
+#@cache_raycast
+def raycast(occupied:set[tuple], start:Vec3, front:Vec3, max_iterations=10):
+
+    if occupied == None:
+        return
 
     pos = start.copy()
 
@@ -767,20 +982,23 @@ def raycast(occupied, start, front, max_iterations=10):
 
         round_ = get_accurate_block(pos)
 
-        if round_ in occupied:
+        if tuple(round_) in occupied:
             previous_block = get_accurate_block(last)
-            block_delta = np.asarray(round_) - np.asarray(previous_block)
+            block_delta = tuple(
+                current - previous
+                for current, previous in zip(round_, previous_block)
+            )
 
-            if not np.any(block_delta):
-                axis = int(np.argmax(np.abs(front)))
-                normal = np.zeros(3, dtype=int)
+            if not any(block_delta):
+                axis = max(range(3), key=lambda index: abs(front[index]))
+                normal = Vec3(0, 0, 0)
                 normal[axis] = -1 if front[axis] > 0 else 1
             else:
-                normal = np.zeros(3, dtype=int)
-                axis = int(np.argmax(np.abs(block_delta)))
+                normal = Vec3(0, 0, 0)
+                axis = max(range(3), key=lambda index: abs(block_delta[index]))
                 normal[axis] = -1 if block_delta[axis] > 0 else 1
 
-            return np.array(round_), np.array(normal)
+            return Vec3(*round_), normal
 
         last = pos.copy()
 

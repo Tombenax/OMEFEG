@@ -14,7 +14,7 @@ package.domain = org.omefeg
 
 source.dir = .
 
-source.include_exts = py,png,jpg,atlas,json,txt,wav,mp3,ttf,obj
+source.include_exts = py,png,jpg,atlas,json,txt,wav,mp3,ttf,obj,omefeg
 
 # Keep the APK lean: dev server, logs, test saves, caches, Windows-only
 # and VCS junk. OPENGL shaders stay (harmless, tiny).

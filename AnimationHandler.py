@@ -2,6 +2,7 @@ from DesktopRender import InstancedModel
 from math import radians
 import threading
 import time
+from Vec3 import Vec3
 
 class AnimationHandler:
     def __init__(self, instacnedmodel:InstancedModel, instancedmodelindex:int, animationpath:str, loop:bool=False):
@@ -30,7 +31,7 @@ class AnimationHandler:
                 for l in lines:
                     if l == "\n": continue
                     l = l.strip().split(",")
-                    self.animationinstructions.append([float(l[0]), float(l[1]), float(l[2])])
+                    self.animationinstructions.append(Vec3(float(l[0]), float(l[1]), float(l[2])))
         elif self.animationpath.endswith(".positionrotationanimation"):
             with open(self.animationpath, "r") as animationfile:
                 lines = animationfile.readlines()
@@ -38,7 +39,10 @@ class AnimationHandler:
                 for l in lines:
                     if l == "\n": continue
                     l = l.strip().split(",")
-                    self.animationinstructions.append([float(l[0]), float(l[1]), float(l[2]), radians(float(l[3])), radians(float(l[4])), radians(float(l[5]))])
+                    self.animationinstructions.append((
+                        Vec3(float(l[0]), float(l[1]), float(l[2])),
+                        Vec3(radians(float(l[3])), radians(float(l[4])), radians(float(l[5]))),
+                    ))
         else:    
             raise FileNotFoundError("The file in the path is the wrong extension, please use '.rotationanimation' or '.positionanimation' or '.positionrotationanimation'.\nFor more info visit: https://tombenax.pythonanywhere.com/animations/rotationanimation or https://tombenax.pythonanywhere.com/animations/positionanimation or https://tombenax.pythonanywhere.com/animations/positionrotationanimation")
     
@@ -69,10 +73,14 @@ class AnimationHandler:
         if self.animationpath.endswith(".rotationanimation"):
             self.instacnedmodel.rotate_instance(self.instacnedmodelindex, self.animationinstructions[self.currentframe])
         elif self.animationpath.endswith(".positionanimation"):
-            self.instacnedmodel.move_instance(self.instacnedmodelindex, self.animationinstructions[self.currentframe])
+            self.instacnedmodel.move_instance(
+                self.instacnedmodelindex,
+                self.animationinstructions[self.currentframe].tolist(),
+            )
         elif self.animationpath.endswith(".positionrotationanimation"):
-            self.instacnedmodel.move_instance(self.instacnedmodelindex, self.animationinstructions[self.currentframe][:3])
-            self.instacnedmodel.rotate_instance(self.instacnedmodelindex, self.animationinstructions[self.currentframe][3:])
+            position, rotation = self.animationinstructions[self.currentframe]
+            self.instacnedmodel.move_instance(self.instacnedmodelindex, position.tolist())
+            self.instacnedmodel.rotate_instance(self.instacnedmodelindex, rotation.tolist())
 
         self.currentframe += 1
 

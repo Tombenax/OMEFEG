@@ -1,9 +1,12 @@
 import time
+from collections.abc import Sequence
 from typing import Any, Callable
 
 from pyrr import Matrix44
 
 from Number import Number
+from Vec3 import Vec3
+from BlenderModel import attach_blender_model
 import moderngl
 from PIL import Image
 import numpy as np
@@ -217,6 +220,10 @@ class Render:
         self.chunk_program["atlasArray"] = 0
         self.chunk_program["blockOccupancy"] = 3
         self.chunk_program["projection"].write(self.PROJECTION)
+        self.chunk_program["TEXTURE_W"] = TEXTURE_W
+        self.chunk_program["TEXTURE_H"] = TEXTURE_H
+        self.chunk_program["ATLAS_W"] = ATLAS_W
+        self.chunk_program["ATLAS_H"] = ATLAS_H
         self.chunk_program["worldMin"].value = (-0.5, -0.5, -0.5)
         self.chunk_program["worldSize"].value = (1, 1, 1)
 
@@ -276,10 +283,10 @@ class Render:
         # persistent CPU volume + per-chunk stamp tracking, so steady
         # walking only touches new chunks instead of rescanning the world.
         self._occ_data = None
-        self._occ_min = None  # np int32[3], block coords of volume corner
+        self._occ_min = None  # Vec3 block coordinates of the volume corner
         self._occ_stamped = set()  # chunk keys already in the volume
         self._occ_chunk_bounds = {}  # chunk key -> (cmin, cmax) int tuples
-        self.light_positions = [(9, 50, 9)]
+        self.light_positions = [Vec3(9, 50, 9)]
         self.light_colors = [(1, 1, 1, 1)]
 
         self.ctx.enable(moderngl.DEPTH_TEST)
@@ -359,25 +366,28 @@ class Render:
         self.item_program["enable_shaders"].value = shaders_enabled
 
         self.blocks_program["view"].write(self.CAMERA.view.astype("f4").tobytes())
-        self.blocks_program["viewPos"].write(self.CAMERA.position.astype("f4").tobytes())
+        self.blocks_program["viewPos"].write(self.CAMERA.position.xyz.astype("f4").tobytes())
 
         self.text_program["view"].write(self.CAMERA.view.astype("f4").tobytes())
         self.text_program["lightPos"].value = (9, 50, 9)
-        self.text_program["viewPos"].write(self.CAMERA.position.astype("f4").tobytes())
+        self.text_program["viewPos"].write(self.CAMERA.position.xyz.astype("f4").tobytes())
 
         self.chunk_program["view"].write(self.CAMERA.view.astype("f4").tobytes())
-        self.chunk_program["viewPos"].write(self.CAMERA.position.astype("f4").tobytes())
+        self.chunk_program["viewPos"].write(self.CAMERA.position.xyz.astype("f4").tobytes())
 
         self.item_program["view"].write(self.CAMERA.view.astype("f4").tobytes())
         self.item_program["lightPos"].value = (9, 50, 9)
-        self.item_program["viewPos"].write(self.CAMERA.position.astype("f4").tobytes())
+        self.item_program["viewPos"].write(self.CAMERA.position.xyz.astype("f4").tobytes())
 
     def set_lights(self, positions, colors):
         if len(positions) != len(colors):
             raise ValueError("positions and colors must have the same length")
         if len(positions) > 16:
             raise ValueError("A maximum of 16 lights is supported")
-        self.light_positions = [tuple(position) for position in positions]
+        self.light_positions = [
+            position.copy() if isinstance(position, Vec3) else Vec3(*position)
+            for position in positions
+        ]
         self.light_colors = [tuple(color) for color in colors]
         self._upload_lights()
 
@@ -437,7 +447,7 @@ class Render:
         # assets/models/block.obj), so the occupancy volume corner is
         # minimum - 0.5. The shaders compute cell = floor(pos - worldMin),
         # which then maps block P to texel P - minimum as stored above.
-        world_min_corner = minimum.astype("f4") - 0.5
+        world_min_corner = minimum.xyz.astype("f4") - 0.5
         self.blocks_program["blockOccupancy"] = 3
         self.blocks_program["worldMin"].value = tuple(map(float, world_min_corner))
         self.blocks_program["worldSize"].value = tuple(map(int, size))
@@ -469,7 +479,7 @@ class Render:
         oz, oy, ox = off[2], off[1], off[0]
         dz, dy, dx = old_shape
         data[oz:oz + dz, oy:oy + dy, ox:ox + dx] = self._occ_data
-        minimum = np.asarray(alloc_min, dtype=np.int32)
+        minimum = Vec3(*alloc_min)
         size = np.asarray(new_size, dtype=np.int32)
         self._occ_data = data
         self._occ_min = minimum
@@ -507,12 +517,12 @@ class Render:
 
         if occupied:
             all_arr = np.asarray(list(occupied), dtype=np.int32).reshape(-1, 3)
-            minimum = all_arr.min(axis=0)
+            minimum = Vec3(*all_arr.min(axis=0))
             maximum = all_arr.max(axis=0)
             size = maximum - minimum + 1
         else:
             all_arr = None
-            minimum = np.zeros(3, dtype="i4")
+            minimum = Vec3(0, 0, 0)
             size = np.ones(3, dtype="i4")
 
         data = np.zeros((int(size[2]), int(size[1]), int(size[0])), dtype=np.uint8)
@@ -528,7 +538,7 @@ class Render:
                      fall[:, 0] - minimum[0]] = 127
 
         self._occ_data = data
-        self._occ_min = np.asarray(minimum, dtype=np.int32)
+        self._occ_min = minimum
         self._occ_stamped = set(keys_now)
         self._occ_chunk_bounds = {}
         for chunk in world.chunks.blocks_list:
@@ -708,7 +718,7 @@ class Render:
             import numpy as _np
             empty = _np.zeros((1, 1, 1), dtype=_np.uint8)
             self._occ_data = empty
-            self._occ_min = _np.asarray([0, 0, 0], dtype=_np.int32)
+            self._occ_min = Vec3(0, 0, 0)
             self._occ_chunk_bounds = {}
             self._occ_upload_new_volume(self._occ_min, (1, 1, 1), empty)
             return True
@@ -734,7 +744,7 @@ class Render:
         if sx0 < 0 or sy0 < 0 or sz0 < 0 or sx1 > dx or sy1 > dy or sz1 > dz:
             return False  # tight box escapes the volume: leave it
         import numpy as _np
-        minimum = _np.asarray(tmin, dtype=_np.int32)
+        minimum = Vec3(*tmin)
         cropped = data[sz0:sz1, sy0:sy1, sx0:sx1].copy()
         self._occ_data = cropped
         self._occ_min = minimum
@@ -851,7 +861,9 @@ class InstancedModel:
         """
 
         self.ctx:moderngl.Context = kwargs["render"].ctx
-        self.program = kwargs["render"].blocks_program if not kwargs.get("is_chunk_dummy") else kwargs["render"].chunk_program
+        self.is_chunk_dummy = bool(kwargs.get("is_chunk_dummy"))
+        self.repeat_block_textures = bool(kwargs.get("repeat_block_textures"))
+        self.program = kwargs["render"].blocks_program if not self.is_chunk_dummy else kwargs["render"].chunk_program
 
         self.indices = kwargs["indices"]
         self.vertices = kwargs["vertices"]
@@ -892,7 +904,7 @@ class InstancedModel:
         self.active_instances = np.zeros((0, 4, 4), dtype="f4")
         self.active_tex_insta = np.zeros((0,), dtype="f4")
 
-    def add_instances(self, positions:list[list[Number]], textures:list[int] | np.ndarray, rotations:list[list[Number]]=[], upload=True):
+    def add_instances(self, positions:Sequence[Vec3 | Sequence[Number]] | np.ndarray, textures:list[int] | np.ndarray, rotations:list[list[Number]]=[], upload=True):
 
         if not isinstance(positions, np.ndarray):
             positions = np.asarray(positions, dtype='f4')
@@ -947,7 +959,7 @@ class InstancedModel:
         if upload:
             self._upload()
 
-    def remove_instances(self, positions, upload=True):
+    def remove_instances(self, positions:Sequence[Vec3 | Sequence[Number]] | np.ndarray, upload=True):
         """Remove instances whose model translations match the given positions.
 
         Pass upload=False when the caller (e.g. World render/cull paths)
@@ -982,6 +994,13 @@ class InstancedModel:
         layer_bytes = self.active_tex_insta.astype('i4').tobytes()
         self.layer_buffer.orphan(len(layer_bytes))
         self.layer_buffer.write(layer_bytes)
+
+    def set_vertices(self, vertices):
+        vertices = np.asarray(vertices, dtype="f4").reshape(-1)
+        if vertices.size != self.vertices.size:
+            raise ValueError("Animated mesh vertices must preserve the exported layout")
+        self.vertices = vertices
+        self.vbo.write(vertices.tobytes())
 
     def set_visible(self, position_or_visible, value=None):
         """Per-instance visibility toggle plus whole-model show/hide.
@@ -1051,12 +1070,15 @@ class InstancedModel:
             return
         if len(self.active_instances) == 0: return
 
+        if not self.is_chunk_dummy:
+            self.program["repeatBlockTextures"].value = self.repeat_block_textures
         self.vao.render(instances=len(self.active_instances))
 
 
 class Model:
     def __init__(self, renderer:Render):
         self.instanedmodels:dict[str, InstancedModel] = {}
+        self.animated_models = {}
         self.renderer = renderer
 
     def add_model(self, identifier:str, **kwargs:dict[str, Any]):
@@ -1066,6 +1088,7 @@ class Model:
             indices: model's indices
             !ONlY USED BY CHUNK DUMMIES! is_chunk_dummy
         """
+        self.animated_models.pop(identifier, None)
         old = self.instanedmodels.get(identifier)
         if old is not None:
             # The replaced model's GPU objects would otherwise leak: chunk
@@ -1081,11 +1104,31 @@ class Model:
             render=self.renderer,
             indices = kwargs["indices"],
             vertices = kwargs["vertices"],
-            is_chunk_dummy = kwargs.get("is_chunk_dummy")
+            is_chunk_dummy = kwargs.get("is_chunk_dummy"),
+            repeat_block_textures = identifier == "block",
         )
 
+    def load_blender_model(
+        self,
+        identifier: str,
+        path: str,
+        position=(0, 0, 0),
+        texture: int = 0,
+        rotation=None,
+    ):
+        """Load a ``.omefeg`` export and return its animation controller."""
+        return attach_blender_model(
+            self, identifier, path, position, texture, rotation
+        )
+
+    def play_animation(self, identifier: str, animation: str, loop: bool = True):
+        self.animated_models[identifier].play(animation, loop=loop)
+
+    def stop_animation(self, identifier: str, reset: bool = False):
+        self.animated_models[identifier].stop(reset=reset)
+
     
-    def add_instances(self, positions:list[list[Number]], textures:list[int], model_identifier:str, rotations:list[list[Number]]=[]):
+    def add_instances(self, positions:Sequence[Vec3 | Sequence[Number]] | np.ndarray, textures:list[int], model_identifier:str, rotations:list[list[Number]]=[]):
         self.instanedmodels[model_identifier].add_instances(positions, textures, rotations)
 
     def remove_instance(self, index:Number, model_identifier:str):
@@ -1093,10 +1136,13 @@ class Model:
         if model_identifier in self.instanedmodels:
             return self.instanedmodels[model_identifier].remove_instance(index)
 
-    def remove_instances(self, positions:list[list[Number]], model_identifier:str):
+    def remove_instances(self, positions:Sequence[Vec3 | Sequence[Number]] | np.ndarray, model_identifier:str):
         return self.instanedmodels[model_identifier].remove_instances(positions)
 
     def render_one(self, identifier:str):
+        animation = self.animated_models.get(identifier)
+        if animation is not None:
+            animation.update()
         self.instanedmodels[identifier].render()
 
     def render(self):
@@ -1125,11 +1171,13 @@ def do_thing2(x):
 
     return x
 
+#TODO rotate player based on position on sphere
+
 class Camera:
     def __init__(self, position, render: Render):
         self.render = render
 
-        self.position = np.array(position, dtype=float)
+        self.position = Vec3(*(float(value) for value in position))
 
         self.start_pos = self.position.copy()
 
@@ -1161,19 +1209,16 @@ class Camera:
 
         self.trust_me = True
 
-        self.front = np.array([1, 0, 0], dtype='f4')
-        self.right = np.array([0, 0, -1], dtype='f4')
-        self.up = np.array([0, 1, 0], dtype='f4')
+        self.front = Vec3(1.0, 0.0, 0.0)
+        self.right = Vec3(0.0, 0.0, -1.0)
+        self.up = Vec3(0.0, 1.0, 0.0)
 
         self.vel_y = 0.0
         self.vel_x = 0.0
         self.vel_z = 0.0
         self.on_ground = False
 
-        self.eye_pos = self.position + np.array(
-            [0, self.eye_height, 0],
-            dtype=float
-        )
+        self.eye_pos = self.position + Vec3(0, self.eye_height, 0)
 
         self.view = Matrix44.look_at(
             self.eye_pos,
@@ -1197,51 +1242,55 @@ class Camera:
         self.last_x = x
         self.last_y = y
 
-    def update(self, occupied, world):
+    def update(self, occupied, world=None):
+
+        if world is not None:
+            point_to_world_center = Vec3(*world.origin) - self.position
+
+            distance_to_world_center = np.linalg.norm(point_to_world_center.xyz)
+            if distance_to_world_center > 0:
+                point_to_world_center /= distance_to_world_center
+                world_up = -point_to_world_center
+            else:
+                world_up = Vec3(0, 1, 0)
+        else:
+            point_to_world_center = Vec3(0, 0, 0)
+            world_up = Vec3(0, 1, 0)
+
         yaw = math.radians(self.yaw)
         pitch = math.radians(self.pitch)
 
-        # Forward direction
-        front = np.array([
-            math.cos(yaw) * math.cos(pitch),
-            math.sin(pitch),
-            math.sin(yaw) * math.cos(pitch)
-        ], dtype='f4')
+        reference_forward = Vec3(1, 0, 0)
+        reference_forward -= world_up * np.dot(reference_forward.xyz, world_up.xyz)
+        reference_length = np.linalg.norm(reference_forward.xyz)
+        if reference_length < 1e-8:
+            reference_forward = Vec3(0, 0, 1)
+            reference_forward -= world_up * np.dot(reference_forward.xyz, world_up.xyz)
+            reference_length = np.linalg.norm(reference_forward.xyz)
+        reference_forward /= reference_length
 
-        front /= np.linalg.norm(front)
+        reference_right = Vec3(*np.cross(world_up.xyz, reference_forward.xyz))
+        go = reference_forward * math.cos(yaw) - reference_right * math.sin(yaw)
+        front = go * math.cos(pitch) + world_up * math.sin(pitch)
+        right = Vec3(*np.cross(world_up.xyz, go.xyz))
+        front /= np.linalg.norm(front.xyz)
 
-        # Right direction
-        right = np.array([
-            math.sin(yaw),
-            0.0,
-            -math.cos(yaw)
-        ], dtype='f4')
+        right /= np.linalg.norm(right.xyz)
+        go /= np.linalg.norm(go.xyz)
 
-        go = np.array([
-            math.cos(yaw),
-            math.sin(pitch),
-            math.sin(yaw)
-        ], dtype='f4')
-
-        
-
-        right /= np.linalg.norm(right)
-        go /= np.linalg.norm(go)
-
-        # Up direction
-        up = np.cross(right, front)
-        up /= np.linalg.norm(up)
+        up = Vec3(*np.cross(front.xyz, right.xyz))
+        up /= np.linalg.norm(up.xyz)
 
         self.front = front
         self.right = right
         self.go = go
-        self.up = -up
+        self.up = up
 
         # --------------------
         # Movement
         # --------------------
 
-        move = np.zeros(3, dtype=float)
+        move = Vec3(0.0, 0.0, 0.0)
 
 
         self.sprint = get_key(self.render.window, glfw.KEY_LEFT_CONTROL)
@@ -1270,24 +1319,23 @@ class Camera:
         if self.on_ground:
             self.jumps = 0
             self.trust_me = True
-    
 
-        point_to_world_center = world.origin - self.position
-
-        point_to_world_center /= np.linalg.norm(point_to_world_center)
-
-        distance_from_world_center = clip(distance(point_to_world_center, self.position) / (world.radius * 1.1), 1, -1)
 
         self.vel_x *= 0.95
         self.vel_y *= 0.95
         self.vel_z *= 0.95
 
-        self.vel_x += point_to_world_center[0] * self.gravity * do_thing2(distance_from_world_center)
-        self.vel_y += point_to_world_center[1] * self.gravity * do_thing2(distance_from_world_center)
-        self.vel_z += point_to_world_center[2] * self.gravity * do_thing2(distance_from_world_center)
+        if world is not None:
+            distance_from_world_center = clip(distance(point_to_world_center, self.position) / (world.radius * 1.1), 1, -1)
+
+            self.vel_x += point_to_world_center[0] * self.gravity * do_thing2(distance_from_world_center)
+            self.vel_y += point_to_world_center[1] * self.gravity * do_thing2(distance_from_world_center)
+            self.vel_z += point_to_world_center[2] * self.gravity * do_thing2(distance_from_world_center)
 
         if get_key(self.render.window, glfw.KEY_SPACE) and (self.on_ground or self.jumps < self.max_jumps) and self.trust_me:
-            self.vel_y = self.jump_strenght 
+            self.vel_y = self.jump_strenght * -point_to_world_center[1]
+            self.vel_x = self.jump_strenght * -point_to_world_center[0]
+            self.vel_z = self.jump_strenght * -point_to_world_center[2]
             self.jumps += 1
             self.trust_me = False
 
@@ -1313,16 +1361,13 @@ class Camera:
 
         moved_by = self.position - prev_pos
 
-        self.bps = round(np.sum(np.abs(1/self.render.dt*moved_by)), 2) #bps
+        self.bps = round(sum(abs(component) for component in moved_by) / self.render.dt, 2)
 
         # --------------------
         # View matrix
         # --------------------
 
-        self.eye_pos = self.position + np.array(
-            [0, self.eye_height, 0],
-            dtype=float
-        )
+        self.eye_pos = self.position + Vec3(0, self.eye_height, 0)
 
         self.view = Matrix44.look_at(
             self.eye_pos,
@@ -1331,8 +1376,8 @@ class Camera:
         )
 
     def collides(self, new_pos, occupied):
-        thing = np.round(new_pos)
-        return tuple(thing) in occupied
+        thing = tuple(round(float(value)) for value in new_pos)
+        return thing in occupied
 
     def collides_h(self, new_pos, occupied, height=2):
         a_pos = new_pos.copy()
@@ -1556,7 +1601,7 @@ class InstancedText:
 
             entry = {
                 "text": text,
-                "position": list(position),
+                "position": position.copy() if isinstance(position, Vec3) else Vec3(*position),
                 "identifier": identifier,
                 "centered": center,
             }
@@ -1576,7 +1621,7 @@ class InstancedText:
         if position is not None:
             if len(position) != 3:
                 raise ValueError("text positions must be [x, y, z]")
-            entry["position"] = list(position)
+            entry["position"] = position.copy() if isinstance(position, Vec3) else Vec3(*position)
         if centered is not None:
             entry["centered"] = bool(centered)
 
@@ -1666,7 +1711,7 @@ class Collectible:
         self.tex_insta = np.zeros((0,), dtype="f4")
         self.callbacks = []
 
-    def add_collectibles(self, positions:list[list[Number]], textures:list[int], on_collect:list[callable]):
+    def add_collectibles(self, positions:list[Vec3], textures:list[int], on_collect:list[callable]):
         self.callbacks.extend(on_collect)
         
         if not isinstance(positions, np.ndarray):
@@ -1692,9 +1737,9 @@ class Collectible:
         self.layer_buffer.orphan(len(layer_bytes))
         self.layer_buffer.write(layer_bytes)
 
-    def update(self, player_position:list[Number]):
+    def update(self, player_position:Vec3):
         for i, instance in enumerate(self.instances):
-            a = list(instance[3][:3])
+            a = Vec3(*instance[3][:3])
 
             if distance(a, player_position) < 3:
                 self.instances = np.delete(self.instances, i, axis=0)
@@ -1746,7 +1791,7 @@ class HUDText(InstancedText):
         for position in positions:
             if len(position) != 2:
                 raise ValueError("HUD text positions must be [x, y] pixel coordinates")
-            hud_positions.append([position[0], position[1], 0])
+            hud_positions.append(Vec3(position[0], position[1], 0))
 
         super().add_texts(texts, hud_positions, identifiers, centered=centered)
         added_entries = self._text_entries[-len(texts):] if texts else []
@@ -1760,7 +1805,7 @@ class HUDText(InstancedText):
         if position is not None:
             if len(position) != 2:
                 raise ValueError("HUD text positions must be [x, y] pixel coordinates")
-            hud_position = [position[0], position[1], 0]
+            hud_position = Vec3(position[0], position[1], 0)
 
         super().update_text(identifier, text, hud_position, centered=centered)
 
@@ -1858,7 +1903,7 @@ if __name__ == "__main__":
         print(render.text_program)
 
 
-        render.text.add_texts(["A"], [[5, 1.8, 0]])
+        render.text.add_texts(["A"], [Vec3(5, 1.8, 0)])
         print("instances:", render.text.instances)
         print("textures:", render.text.tex_insta)
         print("instance buffer:", render.text.instance_buffer.size)
@@ -1870,11 +1915,11 @@ if __name__ == "__main__":
         render.camera.update(set())
 
         render.blocks_program["view"].write(render.camera.view.astype("f4").tobytes())
-        render.blocks_program["viewPos"].write(render.camera.position.astype('f4').tobytes())
+        render.blocks_program["viewPos"].write(render.camera.position.xyz.astype('f4').tobytes())
 
         render.text_program["view"].write(render.camera.view.astype("f4").tobytes())
         render.text_program["lightPos"].value = (0, 0, 0)
-        render.text_program["viewPos"].write(render.camera.position.astype('f4').tobytes())
+        render.text_program["viewPos"].write(render.camera.position.xyz.astype('f4').tobytes())
 
 
         render.MODEL.render()

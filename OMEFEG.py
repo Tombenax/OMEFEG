@@ -10,7 +10,12 @@ import importlib as _importlib
 from random import Random  # explicit: was via `from Render import *`
 import json
 
-#TODO: add player rotation when thy walk on the planet
+from Entity import Entitys
+from Player import Player
+
+from BehaviurScript import *
+
+from BlenderModel import attach_blender_model
 
 # True on PC, False on Android phones. Override with OMEFEG_DESKTOP=0/1.
 DESKTOP = os.environ.get("OMEFEG_DESKTOP")
@@ -33,7 +38,7 @@ from utils import *
 from network import Network
 import threading
 import struct
-
+from Vec3 import Vec3
 
 class sin:
     def __init__(self) -> None:
@@ -149,7 +154,7 @@ def colletced(render):
 
     pos += 1
 
-    coll.add_collectibles([x, pos, z], [0], [colletced])
+    coll.add_collectibles([Vec3(x, pos, z)], [0], [colletced])
 
 send_thread = None
 
@@ -296,12 +301,24 @@ def hide_esc_screen():
 
 CHUNK_GENERATION_THREADS = 5
 
+PLAYER = None
+
+NPCS = None
+
 def init(render):
-    global TEXT, coll, WORLD, RENDER_DISTANCE, NETWORK, PLAYERS, min_x, max_x, min_y, max_y, hud, SLECTED, menus, selected, MULTIPLAYER, LOAD_WORLD
+    global TEXT, coll, WORLD, RENDER_DISTANCE, NETWORK, PLAYERS, min_x, max_x, min_y, max_y, hud, SLECTED, menus, selected, MULTIPLAYER, LOAD_WORLD, PLAYER, NPCS, TEST_ENTITY
+
+    PLAYER = Player(render)
 
     RENDER_DISTANCE = 15
 
     menus = Menus(render)
+
+    NPCS = Model(render)
+
+    attach_blender_model(NPCS, "NPC", "assets/models/NPC.omefeg", (10, 1001, 0), 15)
+
+    NPCS.play_animation("NPC", "Idle")
 
 
     menus.load_template("mainscreen", "assets/layouts/main_screen.json", {"load_world": lambda: set_variable("load_world"), "erase_world": lambda: set_variable("erase_world"), "multiplayer": lambda: set_variable("multiplayer")})
@@ -437,8 +454,44 @@ def init(render):
 
     WORLD = World(render, 1000, [0, 0, 0], 100) #, random_seed, heightmap, rules, sin_world=sin_world, biomes = not FLAT, persistent=(not MULTIPLAYER and not NO_SAVE))
 
-    render.CAMERA.position[1] = WORLD.radius+5
-    render.CAMERA.position += np.array(WORLD.origin, dtype="f4")
+    PLAYER.set_pos(Vec3(0, 1001, 0))
+
+    TEST_ENTITY = Entitys(render)
+
+    BS = BehaviurScript({ # not bulls**t
+        "init":[
+        ],
+
+        "update":[
+            START_ANIMATION("Idle", True),
+            RANDOM_NUMBER(2, 6, "RAND_TIME_IDLE"),
+            WAIT("RAND_TIME_IDLE"),
+
+            START_ANIMATION("IdleToWalk", False),
+            WAIT(2),
+
+            START_ANIMATION("Walk", True),
+
+            SET_VARIABLE("PLAYER_POS", PLAYER.pos),
+            RANDOM_NUMBER(1, 10, "RAND_TIME_MOVE"),
+
+            #calculate direction
+
+            MIN_VEC_VEC_STORE("position", "PLAYER_POS", "DIR_VECT"),
+
+            MULT_VEC("DIR_VECT", 1, 0, 1),
+            MULT_VEC("DIR_VECT", -1, 0, -1),
+
+            #MUL_VEC_INT("RAND_VECT", "RAND_TIME_MOVE"),
+
+            ROTATE_FROM_DIRECTION_VECTOR("DIR_VECT", 90),
+            MOVE("DIR_VECT", "RAND_TIME_MOVE"),
+        ]
+    })
+
+    TEST_ENTITY.add_entity("assets/models/cat.omefeg", Vec3(0, 1001, 0), BS)
+
+    #TEST_ENTITY.MODEL.play_animation(ent_name, "Idle", True)
 
     #render.CAMERA.position[0] = 0
     #render.CAMERA.position[1] = 0
@@ -448,7 +501,7 @@ def init(render):
         saved_player = open_save_file("player.bin", load_player)
         if saved_player is not None:
             try:
-                render.CAMERA.position = np.array(saved_player[0:3], dtype="f4")
+                PLAYER.set_pos(Vec3(*saved_player[0:3]))
                 render.CAMERA.yaw = float(saved_player[3])
                 render.CAMERA.pitch = float(saved_player[4])
                 print(saved_player, render.CAMERA.position, render.CAMERA.yaw, render.CAMERA.pitch)
@@ -493,7 +546,7 @@ def init(render):
                 continue
 
 
-    TEXT.add_texts(["Welcome to OMEFEG"], [[0, higher, 0]])
+    TEXT.add_texts(["Welcome to OMEFEG"], [Vec3(0, higher, 0)])
     
 
     if MULTIPLAYER:
@@ -512,21 +565,21 @@ def init(render):
     SLECTED = Model(render)
     v, i = load_obj("assets/models/block.obj")
     SLECTED.add_model("selected", vertices=v, indices=i)
-    SLECTED.add_instances([[0, 0, 0]], [12], "selected")
+    SLECTED.add_instances([Vec3(0, 0, 0)], [12], "selected")
 
     coll = Collectible(render)
 
-    pos = WORLD.get_block_y_at(render.CAMERA.position[0]+5, render.CAMERA.position[2])
+    pos = WORLD.get_block_y_at(PLAYER.pos[0]+5, PLAYER.pos[2])
     pos += 1
 
-    coll.add_collectibles([render.CAMERA.position[0]+5, pos, render.CAMERA.position[2]], [0], [colletced])
+    coll.add_collectibles([Vec3(PLAYER.pos[0]+5, pos, PLAYER.pos[2])], [0], [colletced])
 
     hud = HUDText(
     render=render,
     charset=CHARSET
     )
 
-    # Top-left status texts stay left-aligned (centered would push them
+    # Top-left status texts stay left-aligned (centered would push them)
     # half off-screen); menus default to centered.
     hud.add_texts(
         ["FPS: negative Infinity", "SELECTED BLOCK: birch leave", "X: HELL NAH Y: NEGATIVE INFINITY Z: EASTER EGGS BE LIKE", "BPS: FUCK MYSELF"],
@@ -537,7 +590,7 @@ def init(render):
 
     render.set_window_size_callback(lambda x,y,z: render.resized(y,z))
 
-    render.set_lights([(0, 50, 0)], [(1, 1, 1, 1)])
+    render.set_lights([Vec3(0, 50, 0)], [(1, 1, 1, 1)])
 
     load_mods()
 
@@ -575,7 +628,7 @@ is_process_finished = True  # back-compat; no longer spawn-per-frame
 _mp_stop = False
 _mp_started = False
 _mp_own_id = None
-_mp_state = {"coords": [0, 2, 0], "yaw": 0, "pitch": 0}
+_mp_state = {"coords": Vec3(0, 2, 0), "yaw": 0, "pitch": 0}
 _mp_backoff_until = 0.0
 _mp_use_legacy = False
 # Updates we sent and expect back as echo. The server broadcasts history
@@ -626,7 +679,7 @@ def _mp_apply_snapshot(playerdata_players, incoming_blocks):
         try:
             if p.get("id") == own:
                 continue
-            new_posses.append(p["position"])
+            new_posses.append(Vec3(*p["position"]))
             new_rotations.append((p["pitch"], p["yaw"] - 90, 0))
         except (KeyError, TypeError):
             continue
@@ -656,7 +709,7 @@ def _mp_legacy_once(outgoing):
     st = _mp_state
     send_data_to_server(NETWORK.tag({
         "setData": True,
-        "coords": st["coords"],
+        "coords": st["coords"].tolist(),
         "yaw": st["yaw"],
         "pitch": st["pitch"],
     }), NETWORK)
@@ -823,13 +876,13 @@ def process_multiplayer(PLAYERS, blocks_placed, blocks_broken, camera=None):
     # every frame and _mp_state stayed at spawn forever.
     if camera is not None:
         with _mp_lock:
-            _mp_state["coords"] = camera.position.tolist()
+            _mp_state["coords"] = camera.position.copy()
             _mp_state["yaw"] = camera.yaw
             _mp_state["pitch"] = camera.pitch
     else:
         try:
             with _mp_lock:
-                _mp_state["coords"] = render.CAMERA.position.tolist()
+                _mp_state["coords"] = PLAYER.pos.copy()
                 _mp_state["yaw"] = render.CAMERA.yaw
                 _mp_state["pitch"] = render.CAMERA.pitch
         except (AttributeError, NameError):
@@ -913,9 +966,9 @@ def process_multiplayer(PLAYERS, blocks_placed, blocks_broken, camera=None):
                 if n == 2:
                     # No cascade here: the sender already ran update()
                     # and synced every product as its own entry.
-                    WORLD.place_block(get_block(*bu), run_update=False)
+                    WORLD.place_block(get_block(bu[0], Vec3(*bu[1])), run_update=False)
                 else:
-                    WORLD.destroy_block(WORLD.get_block_at(bu))
+                    WORLD.destroy_block(WORLD.get_block_at(Vec3(*bu)))
             except (AttributeError, KeyError, TypeError, IndexError):
                 continue
         _mp_deferred[:] = still_deferred
@@ -955,7 +1008,7 @@ ASK_EVERY = 1 #frames
 last_asked = 0
 
 
-def update(render):
+def update(render:Render):
     global coll, min_x, max_x
     global min_y, max_y, PLAYERS
     global playerdata, hud, frames_passed
@@ -963,6 +1016,7 @@ def update(render):
     global pressed,blocks_placed, blocks_broken
     global pause, start_pos, MULTIPLAYER
     global LOAD_WORLD, sound_player, last_asked
+    global TEST_ENTITY
 
     last_asked += 1
 
@@ -979,13 +1033,22 @@ def update(render):
             menus.deactivate("esc_screen")
             menus.deactivate("settings")
 
+    splitted_buffer:list[str] = render.request_text_buffer().split(" ") 
+    if (
+    "tp" in splitted_buffer
+    ):
+        PLAYER.set_pos(Vec3(1001, 0, 0))
+
+        render.set_text_buffer("")
+        
+
     menus.render()
 
     if pause:
         return
 
     if render.get_key(render.KEY_R):
-        render.CAMERA.position[1] = WORLD.origin[1] + WORLD.radius
+        PLAYER.set_pos(Vec3(0, 1005, 0))
 
     #play EPIC music
     if not sound_player.is_playing(render.dt) and settings["audio"]:
@@ -994,24 +1057,24 @@ def update(render):
     elif not sound_player.is_playing(render.dt) and not settings["audio"]:
         sound_player.stop()
 
-    listed_camera = render.CAMERA.position.tolist()
-    # floor, not int(): int() truncates toward zero, so e.g. x=-0.5 mapped
-    # to chunk 0 while the blocks there belong to chunk -10 (which then
-    # renders a stale dummy under the player's feet).
-    inted_camera = list(map(math.floor, listed_camera))
-    camera_chunk_pos = [int(str(inted_camera[0])[0:-1]+"0"), int(str(inted_camera[1])[0:-1]+"0"), int(str(inted_camera[2])[0:-1]+"0")]   #[inted_camera[0]//10*10, 0, inted_camera[2]//10*10]
+    inted_camera = Vec3(*(math.floor(coord) for coord in PLAYER.pos))
+    camera_chunk_pos = Vec3(
+        int(str(int(inted_camera[0]))[:-1] + "0"),
+        int(str(int(inted_camera[1]))[:-1] + "0"),
+        int(str(int(inted_camera[2]))[:-1] + "0"),
+    )
 
-    if last_asked >= ASK_EVERY:
+    if last_asked >= ASK_EVERY and not WORLD.generate_all_chunks:
         last_asked = 0
-        for x, z in square_range(camera_chunk_pos, RENDER_DISTANCE, 10):
-            WORLD.generate_chunk(x, inted_camera[1], z)
+        for x, z in square_range_3_layers(camera_chunk_pos, 10):
+            WORLD.generate_chunk(x, int(inted_camera[1]), z)
 
-    render.CAMERA.update(WORLD.blocks.occupied, WORLD)
-    coll.update(inted_camera)
+    PLAYER.update(WORLD)
+    coll.update(PLAYER.pos)
     coll.render()
     block_placed, block_removed = None, None
 
-    if result := raycast(WORLD.blocks.occupied, render.CAMERA.eye_pos, render.CAMERA.front): #eye_pos bc ray starts from eyes
+    if result := raycast(WORLD.get_neighbours_extened_in_circle(PLAYER.pos, 10), render.CAMERA.eye_pos, render.CAMERA.front): #eye_pos bc ray starts from eyes
         position, normal = result
 
         # Skip Matrix44 allocs + full buffer upload when the highlight did
@@ -1031,6 +1094,7 @@ def update(render):
             a = Matrix44.from_scale([1.02, 1.02, 1.02]) @ Matrix44.from_translation(position)
 
             SLECTED.instanedmodels["selected"].instances[0] = a
+            SLECTED.instanedmodels["selected"].active_instances[0] = a
 
             SLECTED.instanedmodels["selected"]._upload()
 
@@ -1038,7 +1102,7 @@ def update(render):
             # place_block cascades Block.update() products; sync every
             # placed block so remotes reproduce the same result.
             # (block_placed keeps its old meaning for mods: the clicked block.)
-            block_placed = (selected_block, (position + normal).tolist())
+            block_placed = (selected_block, position + normal)
             _new_blocks = WORLD.place_block(get_block(*block_placed))
             if _new_blocks:
                 # Single lock acquisition for the whole batch (was one
@@ -1048,17 +1112,17 @@ def update(render):
                     if _room > 0:
                         for new_block in _new_blocks[:_room]:
                             blocks_placed.append(
-                                (new_block.block, list(new_block.position)))
+                                (new_block.block, new_block.position.tolist()))
 
         if render.get_mouse_button(render.MOUSE_BUTTON_RIGHT) == render.PRESS and cooldown2.is_active:
-            WORLD.destroy_block(WORLD.get_block_at(position.tolist()))
-            block_removed = position.tolist()
+            WORLD.destroy_block(WORLD.get_block_at(position))
+            block_removed = position
             with _mp_lock:
                 if len(blocks_broken) < 500:
-                    blocks_broken.append(block_removed)
+                    blocks_broken.append(block_removed.tolist())
 
     if MULTIPLAYER:
-        process_multiplayer(PLAYERS, blocks_placed, blocks_broken, render.CAMERA)
+        process_multiplayer(PLAYERS, blocks_placed, blocks_broken, PLAYER.camera)
 
     # Cached mod funcs (was exec() string recompile per mod per frame).
     _g = globals()
@@ -1071,6 +1135,9 @@ def update(render):
 
     WORLD.update()
     WORLD.render_blocks()
+
+    TEST_ENTITY.update(render.dt)
+    TEST_ENTITY.render_entities()
 
     if MULTIPLAYER:
         PLAYERS.render()
@@ -1102,14 +1169,13 @@ def update(render):
     elif render.get_key(render.KEY_LEFT_ALT) != render.PRESS and pressed:
         pressed = False
 
-    hud.update_text("XYZ", f"X: {round(render.CAMERA.position.tolist()[0])} Y: {round(render.CAMERA.position.tolist()[1])} Z: {round(render.CAMERA.position.tolist()[2])}", [0, 60])
+    hud.update_text("XYZ", f"X: {round(PLAYER.pos.tolist()[0])} Y: {round(PLAYER.pos.tolist()[1])} Z: {round(PLAYER.pos.tolist()[2])}", [0, 60])
 
     hud.update_text("bps", f"BPS: {render.CAMERA.bps}", [WIDTH-200, 0])
 
     hud.render()
 
-    if result:
-        SLECTED.render()
+    SLECTED.render()
 
     if time.time() - start_second >= 1:
         fps_text = f"FPS: {frames_passed}"
@@ -1159,7 +1225,7 @@ if _should_save:
     print(f"Saved {saved_chunks} chunks around the player (far chunks were already saved on unload)")
 
     try:
-        data = struct.pack(">dddff", *render.CAMERA.position.tolist(), render.CAMERA.yaw, render.CAMERA.pitch)
+        data = struct.pack(">dddff", *PLAYER.pos.tolist(), render.CAMERA.yaw, render.CAMERA.pitch)
 
         save("player.bin", data)
     except (AttributeError, NameError):

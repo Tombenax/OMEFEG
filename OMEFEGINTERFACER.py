@@ -1,4 +1,4 @@
-import numpy as np
+from Vec3 import Vec3
 
 #this are the ame variables, i use teh to set them so it's easier for me.
 
@@ -29,13 +29,18 @@ def set_local_variables(lo):
 
 
 def move_player(x, y, z):
-    get_variable("CAMERA").position = np.array([x, y, z], dtype="f4")
+    position = Vec3(float(x), float(y), float(z))
+    player = get_variable("PLAYER")
+    if player is None:
+        get_variable("CAMERA").position = position
+    else:
+        player.set_pos(position)
 
 def place(block_name:str, x, y, z):
-    get_variable("WORLD").place_block(get_variable("get_block")(block_name, [x, y, z]))
+    get_variable("WORLD").place_block(get_variable("get_block")(block_name, Vec3(x, y, z)))
 
 def destroy(x, y, z):
-    get_variable("WORLD").destroy_block(get_variable("WORLD").get_block_at([x, y, z]))
+    get_variable("WORLD").destroy_block(get_variable("WORLD").get_block_at(Vec3(x, y, z)))
 
 def send_notification(title:str, message:str):
     get_variable("notification")(title, message)

@@ -5,6 +5,7 @@ import time
 from utils import generate_terrain, export_and_load_chunk, chunk_time
 from Block import Block
 from allBlocks import *
+from Vec3 import Vec3
 import os
 import sys
 
@@ -22,12 +23,13 @@ else:
 from lists import *
 from Number import Number
 from typing import Callable, Any
+from collections.abc import Sequence
 
 class Chunk:
-    def __init__(self, render, position:list[Number], seed:Random, heightmap:Callable, biomes_map:Callable, rules:dict[Any, Any], **kwargs):
+    def __init__(self, render, position:Vec3 | Sequence[Number], seed:Random, heightmap:Callable, biomes_map:Callable, rules:dict[Any, Any], **kwargs):
         self.blocks = BlocksList()
 
-        self.position = position
+        self.position = position.copy() if isinstance(position, Vec3) else Vec3(*position)
 
         self.render = render
 
@@ -56,7 +58,7 @@ class Chunk:
 
             self.model.add_model("dummy", vertices = vertices, indices = indices, is_chunk_dummy=True)
 
-            self.model.add_instances([[0, 0, 0]], [0], "dummy")
+            self.model.add_instances([Vec3(0, 0, 0)], [0], "dummy")
 
         self.is_player_in = False
 
@@ -77,13 +79,13 @@ class Chunk:
         self._dummy_dirty = False
 
     @classmethod
-    def from_payload(cls, render, position, payload):
+    def from_payload(cls, render, position:Vec3 | Sequence[Number], payload):
         """Build a chunk from worker-thread output without re-running
         terrain generation. GL objects are created here, so call this on
         the main (GL context) thread only."""
         chunk = cls.__new__(cls)
         chunk.blocks = BlocksList()
-        chunk.position = list(position)
+        chunk.position = position.copy() if isinstance(position, Vec3) else Vec3(*position)
         chunk.render = render
         # Workers index the list off-thread: adopt it instead of re-walking
         # ~6700 blocks on the main thread. Legacy payloads without one
@@ -125,7 +127,7 @@ class Chunk:
             indices=payload["dummy_indices"],
             is_chunk_dummy=True,
         )
-        chunk.model.add_instances([[0, 0, 0]], [0], "dummy")
+        chunk.model.add_instances([Vec3(0, 0, 0)], [0], "dummy")
         chunk.is_player_in = False
         chunk.prev_is_player_in = False
         chunk._dummy_dirty = False
@@ -136,7 +138,7 @@ class Chunk:
         return chunk
 
     @classmethod
-    def from_blocks(cls, render, position, blocks):
+    def from_blocks(cls, render, position:Vec3 | Sequence[Number], blocks):
         """Build a GL-ready chunk from already-loaded Block objects.
 
         Fast path for save-file loads: single extend + single instance
@@ -147,7 +149,7 @@ class Chunk:
         from utils import export_and_load_chunk as _export
         chunk = cls.__new__(cls)
         chunk.blocks = BlocksList()
-        chunk.position = list(position)
+        chunk.position = position.copy() if isinstance(position, Vec3) else Vec3(*position)
         chunk.render = render
         chunk.model = Model(render)
         chunk.model.add_model("block", vertices=CUBE_MODEL_INFO[0], indices=CUBE_MODEL_INFO[1])
@@ -166,7 +168,7 @@ class Chunk:
             chunk.model.add_model(
                 "dummy", vertices=_verts, indices=_inds,
                 is_chunk_dummy=True)
-            chunk.model.add_instances([[0, 0, 0]], [0], "dummy")
+            chunk.model.add_instances([Vec3(0, 0, 0)], [0], "dummy")
         chunk.is_player_in = False
         chunk.prev_is_player_in = False
         chunk._dummy_dirty = False
@@ -243,7 +245,7 @@ class Chunk:
 
         self.model.add_model("dummy", vertices = vertices, indices = indices, is_chunk_dummy=True)
 
-        self.model.add_instances([[0, 0, 0]], [0], "dummy")
+        self.model.add_instances([Vec3(0, 0, 0)], [0], "dummy")
 
         self._dummy_dirty = False
         chunk_time("dummy-rebuild", _dt0)
@@ -277,14 +279,14 @@ class Chunk:
     def get_y_at(self, x:Number, z:Number) -> Number:
         return self.get_block_pos_at(x, z)[1] + 1
 
-    def get_block_pos_at(self, x:Number, z:Number) -> list[Number]:
+    def get_block_pos_at(self, x:Number, z:Number) -> Vec3:
         try:
             arr = np.array(self.blocks.positions)
-            return list(arr[(arr[:, 0] == x) & (arr[:, 2] == z)][0])
+            return Vec3(*arr[(arr[:, 0] == x) & (arr[:, 2] == z)][0])
         except IndexError:
-            return [x, 100, z]
+            return Vec3(x, 100, z)
 
-    def get_block_at(self, position:list[Number]):
+    def get_block_at(self, position:Vec3 | Sequence[Number]):
         try:
             return self.blocks.positions_blocks[tuple(position)]
         except:

@@ -70,6 +70,7 @@ import json
 import os
 import random
 import math
+from collections.abc import Sequence
 from typing import Any, Callable
 
 import numpy as np
@@ -77,6 +78,8 @@ from pyrr import Matrix44
 from PIL import Image
 
 from Number import Number
+from Vec3 import Vec3
+from BlenderModel import attach_blender_model
 
 
 def distance(first: list[Number], second: list[Number]):
@@ -312,13 +315,49 @@ varying vec3 v_frag;
 uniform sampler2D atlasTex;
 uniform vec3 lightPos;
 uniform vec3 viewPos;
+uniform vec2 atlasTiles;
+uniform float repeatBlockTextures;
+
+vec2 repeatedBlockUV(vec2 atlasUV, vec3 worldPos, vec3 normal) {
+    vec2 tile = floor(atlasUV * atlasTiles);
+    vec2 localUV;
+    vec2 faceUVOffset;
+
+    if (abs(normal.z) > 0.5) {
+        localUV = normal.z < 0.0
+            ? vec2(0.5 - worldPos.x, worldPos.y + 0.5)
+            : vec2(worldPos.x + 0.5, worldPos.y + 0.5);
+        faceUVOffset = normal.z < 0.0
+            ? vec2(0.0, 0.75)
+            : vec2(0.25, 0.5);
+    } else if (abs(normal.x) > 0.5) {
+        localUV = normal.x > 0.0
+            ? vec2(0.5 - worldPos.z, worldPos.y + 0.5)
+            : vec2(worldPos.z + 0.5, worldPos.y + 0.5);
+        faceUVOffset = normal.x > 0.0
+            ? vec2(0.0, 0.5)
+            : vec2(0.25, 0.5);
+    } else {
+        localUV = normal.y > 0.0
+            ? vec2(0.5 - worldPos.x, worldPos.z + 0.5)
+            : vec2(worldPos.x + 0.5, worldPos.z + 0.5);
+        faceUVOffset = normal.y > 0.0
+            ? vec2(0.0, 0.25)
+            : vec2(0.5, 0.75);
+    }
+
+    return (tile + faceUVOffset + fract(localUV) * 0.25) / atlasTiles;
+}
 
 void main() {
-    vec4 tex = texture2D(atlasTex, v_uv);
+    vec3 norm = normalize(v_normal);
+    vec2 sampleUV = repeatBlockTextures > 0.5
+        ? repeatedBlockUV(v_uv, v_frag, norm)
+        : v_uv;
+    vec4 tex = texture2D(atlasTex, sampleUV);
     if (tex.a < 0.1)
         discard;
     vec3 color = tex.rgb;
-    vec3 norm = normalize(v_normal);
     vec3 lightDir = normalize(lightPos - v_frag);
     float diff = max(dot(norm, lightDir), 0.0);
     vec3 ambient = 0.4 * color;
@@ -620,6 +659,9 @@ class InstancedModel:
         """
         self._render = kwargs["render"]
         self._is_dummy = bool(kwargs.get("is_chunk_dummy"))
+        self._repeat_block_textures = bool(
+            kwargs.get("repeat_block_textures") or self._is_dummy
+        )
         self._atlas = kwargs.get("atlas", "blocks")
         if self._atlas not in _ATLASES:
             self._atlas = "blocks"
@@ -743,7 +785,7 @@ class InstancedModel:
 
     # -- instance bookkeeping (identical math to Render.py) -----------------
 
-    def add_instances(self, positions: list[list[Number]],
+    def add_instances(self, positions: Sequence[Vec3 | Sequence[Number]] | np.ndarray,
                       textures: list[int] | np.ndarray,
                       rotations: list[list[Number]] = [],
                       upload=True):
@@ -802,7 +844,7 @@ class InstancedModel:
         if upload:
             self._upload()
 
-    def remove_instances(self, positions, upload=True):
+    def remove_instances(self, positions: Sequence[Vec3 | Sequence[Number]] | np.ndarray, upload=True):
         """Remove instances whose model translations match the given positions.
 
         Pass upload=False when the caller (e.g. World render/cull paths)
@@ -851,6 +893,13 @@ class InstancedModel:
 
     def _upload(self):
         self._rebuild()
+
+    def set_vertices(self, vertices):
+        vertices = np.asarray(vertices, dtype=np.float32).reshape(-1, 8)
+        if vertices.shape != self.vertices.shape:
+            raise ValueError("Animated mesh vertices must preserve the exported layout")
+        self.vertices = vertices.copy()
+        self._upload()
 
     def detach_gl(self):
         """Detach this model's canvas objects (called when a model is
@@ -906,6 +955,12 @@ class InstancedModel:
                     indices=[0, 0, 0],
                 )
             rc["atlasTex"] = 1
+            tile_w, tile_h, atlas_w, atlas_h = _ATLASES[self._atlas]
+            rc["atlasTiles"] = (
+                atlas_w / tile_w,
+                atlas_h / tile_h,
+            )
+            rc["repeatBlockTextures"] = float(self._repeat_block_textures)
             render._attach_world_rc(rc)
             render._push_uniforms_to(self)
             self._rc = rc
@@ -977,6 +1032,7 @@ class InstancedModel:
 class Model:
     def __init__(self, renderer):
         self.instanedmodels: dict[str, InstancedModel] = {}
+        self.animated_models = {}
         self.renderer = renderer
 
     def add_model(self, identifier: str, **kwargs: dict[str, Any]):
@@ -987,6 +1043,7 @@ class Model:
             !ONlY USED BY CHUNK DUMMIES! is_chunk_dummy
             atlas: 'blocks' (default), 'chars' or 'items'
         """
+        self.animated_models.pop(identifier, None)
         old = self.instanedmodels.get(identifier)
         if old is not None:
             try:
@@ -999,9 +1056,29 @@ class Model:
             vertices=kwargs["vertices"],
             is_chunk_dummy=kwargs.get("is_chunk_dummy"),
             atlas=kwargs.get("atlas", "blocks"),
+            repeat_block_textures=identifier == "block",
         )
 
-    def add_instances(self, positions: list[list[Number]],
+    def load_blender_model(
+        self,
+        identifier: str,
+        path: str,
+        position=(0, 0, 0),
+        texture: int = 0,
+        rotation=None,
+    ):
+        """Load a ``.omefeg`` export and return its animation controller."""
+        return attach_blender_model(
+            self, identifier, path, position, texture, rotation
+        )
+
+    def play_animation(self, identifier: str, animation: str, loop: bool = True):
+        self.animated_models[identifier].play(animation, loop=loop)
+
+    def stop_animation(self, identifier: str, reset: bool = False):
+        self.animated_models[identifier].stop(reset=reset)
+
+    def add_instances(self, positions: Sequence[Vec3 | Sequence[Number]] | np.ndarray,
                       textures: list[int], model_identifier: str,
                       rotations: list[list[Number]] = []):
         self.instanedmodels[model_identifier].add_instances(
@@ -1013,10 +1090,13 @@ class Model:
         if model_identifier in self.instanedmodels:
             return self.instanedmodels[model_identifier].remove_instance(index)
 
-    def remove_instances(self, positions: list[list[Number]], model_identifier: str):
+    def remove_instances(self, positions: Sequence[Vec3 | Sequence[Number]] | np.ndarray, model_identifier: str):
         return self.instanedmodels[model_identifier].remove_instances(positions)
 
     def render_one(self, identifier: str):
+        animation = self.animated_models.get(identifier)
+        if animation is not None:
+            animation.update()
         self.instanedmodels[identifier].render()
 
     def render(self):
@@ -1049,7 +1129,7 @@ class Camera:
     def __init__(self, position, render):
         self.render = render
 
-        self.position = np.array(position, dtype=float)
+        self.position = Vec3(*(float(value) for value in position))
 
         self.start_pos = self.position.copy()
 
@@ -1081,16 +1161,14 @@ class Camera:
 
         self.trust_me = True
 
-        self.front = np.array([1, 0, 0], dtype="f4")
-        self.right = np.array([0, 0, -1], dtype="f4")
-        self.up = np.array([0, 1, 0], dtype="f4")
+        self.front = Vec3(1.0, 0.0, 0.0)
+        self.right = Vec3(0.0, 0.0, -1.0)
+        self.up = Vec3(0.0, 1.0, 0.0)
 
         self.vel_y = 0.0
         self.on_ground = False
 
-        self.eye_pos = self.position + np.array(
-            [0, self.eye_height, 0], dtype=float
-        )
+        self.eye_pos = self.position + Vec3(0, self.eye_height, 0)
 
         self.view = Matrix44.look_at(
             self.eye_pos, self.eye_pos + self.front, self.up
@@ -1117,31 +1195,24 @@ class Camera:
         pitch = math.radians(self.pitch)
 
         # Forward direction
-        front = np.array(
-            [
-                math.cos(yaw) * math.cos(pitch),
-                math.sin(pitch),
-                math.sin(yaw) * math.cos(pitch),
-            ],
-            dtype="f4",
+        front = Vec3(
+            math.cos(yaw) * math.cos(pitch),
+            math.sin(pitch),
+            math.sin(yaw) * math.cos(pitch),
         )
 
-        front /= np.linalg.norm(front)
+        front /= np.linalg.norm(front.xyz)
 
         # Right direction
-        right = np.array(
-            [math.sin(yaw), 0.0, -math.cos(yaw)], dtype="f4"
-        )
-        go = np.array(
-            [math.cos(yaw), math.sin(pitch), math.sin(yaw)], dtype="f4"
-        )
+        right = Vec3(math.sin(yaw), 0.0, -math.cos(yaw))
+        go = Vec3(math.cos(yaw), math.sin(pitch), math.sin(yaw))
 
-        right /= np.linalg.norm(right)
-        go /= np.linalg.norm(go)
+        right /= np.linalg.norm(right.xyz)
+        go /= np.linalg.norm(go.xyz)
 
         # Up direction
-        up = np.cross(right, front)
-        up /= np.linalg.norm(up)
+        up = Vec3(*np.cross(right.xyz, front.xyz))
+        up /= np.linalg.norm(up.xyz)
 
         self.front = front
         self.right = right
@@ -1152,7 +1223,7 @@ class Camera:
         # Movement
         # --------------------
 
-        move = np.zeros(3, dtype=float)
+        move = Vec3(0.0, 0.0, 0.0)
 
         self.sprint = get_key(self.render.window, KEY_LEFT_CONTROL)
         self.fly = get_key(self.render.window, KEY_F)
@@ -1211,17 +1282,15 @@ class Camera:
         # View matrix
         # --------------------
 
-        self.eye_pos = self.position + np.array(
-            [0, self.eye_height, 0], dtype=float
-        )
+        self.eye_pos = self.position + Vec3(0, self.eye_height, 0)
 
         self.view = Matrix44.look_at(
             self.eye_pos, self.eye_pos + self.front, self.up
         )
 
     def collides(self, new_pos, occupied):
-        thing = np.round(new_pos)
-        return tuple(thing) in occupied
+        thing = tuple(round(float(value)) for value in new_pos)
+        return thing in occupied
 
     def collides_h(self, new_pos, occupied, height=2):
         a_pos = new_pos.copy()
@@ -1421,7 +1490,7 @@ class InstancedText(InstancedModel):
 
             entry = {
                 "text": text,
-                "position": list(position),
+                "position": position.copy() if isinstance(position, Vec3) else Vec3(*position),
                 "identifier": identifier,
                 "centered": center,
             }
@@ -1441,7 +1510,7 @@ class InstancedText(InstancedModel):
         if position is not None:
             if len(position) != 3:
                 raise ValueError("text positions must be [x, y, z]")
-            entry["position"] = list(position)
+            entry["position"] = position.copy() if isinstance(position, Vec3) else Vec3(*position)
         if centered is not None:
             entry["centered"] = bool(centered)
 
@@ -1474,7 +1543,7 @@ class Collectible(InstancedModel):
 
     def add_collectibles(
         self,
-        positions: list[list[Number]],
+        positions: list[Vec3],
         textures: list[int],
         on_collect: list[callable],
     ):
@@ -1500,9 +1569,9 @@ class Collectible(InstancedModel):
 
         self._upload()
 
-    def update(self, player_position: list[Number]):
+    def update(self, player_position: Vec3):
         for i, instance in enumerate(self.instances):
-            a = list(instance[3][:3])
+            a = Vec3(*instance[3][:3])
 
             if distance(a, player_position) < 3:
                 self.instances = np.delete(self.instances, i, axis=0)
@@ -1627,7 +1696,7 @@ class HUDText(InstancedText):
                 raise ValueError(
                     "HUD text positions must be [x, y] pixel coordinates"
                 )
-            hud_positions.append([position[0], position[1], 0])
+            hud_positions.append(Vec3(position[0], position[1], 0))
 
         super().add_texts(texts, hud_positions, identifiers, centered=centered)
         added_entries = self._text_entries[-len(texts):] if texts else []
@@ -1643,7 +1712,7 @@ class HUDText(InstancedText):
                 raise ValueError(
                     "HUD text positions must be [x, y] pixel coordinates"
                 )
-            hud_position = [position[0], position[1], 0]
+            hud_position = Vec3(position[0], position[1], 0)
 
         super().update_text(identifier, text, hud_position, centered=centered)
 
@@ -2097,7 +2166,7 @@ class Render:
 
         # Same defaults as desktop Render.py; the mobile shaders only use
         # the first light (single GLES2 light, no shadow maps).
-        self.light_positions = [self._main_light()]
+        self.light_positions = [Vec3(*self._main_light())]
         self.light_colors = [(1, 1, 1, 1)]
         self._occupied = set()
         self._occ_stamped = set()
@@ -2213,7 +2282,7 @@ class Render:
             pass
         try:
             view = self.CAMERA.view.astype("f4")
-            campos = self.CAMERA.position.astype("f4")
+            campos = self.CAMERA.position.xyz.astype("f4")
         except Exception:
             return
         view_bytes = view.tobytes()
@@ -2253,7 +2322,10 @@ class Render:
             raise ValueError("positions and colors must have the same length")
         if len(positions) > 16:
             raise ValueError("A maximum of 16 lights is supported")
-        self.light_positions = [tuple(position) for position in positions]
+        self.light_positions = [
+            position.copy() if isinstance(position, Vec3) else Vec3(*position)
+            for position in positions
+        ]
         self.light_colors = [tuple(color) for color in colors]
 
     def refresh_chunk_occupancy(self, chunk):
@@ -2433,7 +2505,7 @@ class Render:
     def _push_uniforms_to(self, model):
         try:
             view = self.CAMERA.view.astype("f4")
-            campos = self.CAMERA.position.astype("f4")
+            campos = self.CAMERA.position.xyz.astype("f4")
         except Exception:
             return
         try:
@@ -2790,15 +2862,19 @@ if __name__ == "__main__":
         model.add_model(
             "block", vertices=CUBE_MODEL_INFO[0], indices=CUBE_MODEL_INFO[1]
         )
-        model.add_instances([[0, 0, 0], [2, 0, 0], [0, 0, 2]], [4, 9, 3], "block")
+        model.add_instances(
+            [Vec3(0, 0, 0), Vec3(2, 0, 0), Vec3(0, 0, 2)],
+            [4, 9, 3],
+            "block",
+        )
         text = InstancedText(render=render, charset=CHARSET)
-        text.add_texts(["HELLO"], [[0, 3, 0]])
+        text.add_texts(["HELLO"], [Vec3(0, 3, 0)])
         hud = HUDText(render=render, charset=CHARSET)
         hud.add_texts(["FPS: 60"], [[10, 10]], ["FPS"])
         coll = Collectible(render)
-        coll.add_collectibles([[1, 2, 1]], [0], [lambda _r: None])
+        coll.add_collectibles([Vec3(1, 2, 1)], [0], [lambda _r: None])
         render._demo = (model, text, hud, coll)
-        render.CAMERA.position = np.array([6.0, 5.0, 6.0])
+        render.CAMERA.position = Vec3(6.0, 5.0, 6.0)
         render.CAMERA.yaw = 225.0
         render.CAMERA.pitch = -20.0
         # solid floor so gravity settles the camera instead of
@@ -2820,7 +2896,7 @@ if __name__ == "__main__":
         render.ctx.clear(0.05, 0.07, 0.1, 1)
         render.CAMERA.update(render._demo_floor)
         model, text, hud, coll = render._demo
-        coll.update(render.CAMERA.position.tolist())
+        coll.update(render.CAMERA.position)
         coll.render()
         model.render()
         text.render()

@@ -22,6 +22,8 @@ class BehaviurScript:
         self.last_time = None
         self.start_pos = None
 
+        self.position = None
+
     def init(self, instance, animation_player, name, dt):
         return self._parse(instance, animation_player, self.instructions_init, name, dt)
 
@@ -29,6 +31,8 @@ class BehaviurScript:
         return self._parse(instance, animation_player, self.instructions_upate, name, dt)
 
     def _parse(self, instance, animation_player, instructions, identifier, dt):
+
+        self.position = Vec3(*instance[3][:3].copy())
 
         return_status = [False, False] #upload, can start update sequnce
 
@@ -139,6 +143,9 @@ class BehaviurScript:
 
                     return_status[0] = True
 
+                case "PRINT_VAR":
+                    print(getattr(self, args[0]))
+
                 case "MULT_VEC":
                     if isinstance(args[0], str):
                         var_name = args[0]
@@ -146,41 +153,11 @@ class BehaviurScript:
 
                     if isinstance(args[1], str):
                         args[1] = getattr(self, args[1])
-                    if isinstance(args[2], str):
-                        args[2] = getattr(self, args[2])
-                    if isinstance(args[3], str):
-                        args[3] = getattr(self, args[3])
+                    
+                    if len(args) == 3:
+                        var_name = args[2]
 
-                    setattr(self, var_name, args[0] * Vec3(args[1], args[2], args[3]))
-
-                case "MULT_VEC_AND_STORE":
-                    if isinstance(args[0], str):
-                        args[0] = getattr(self, args[0])
-
-                    if isinstance(args[1], str):
-                        args[1] = getattr(self, args[1])
-                    if isinstance(args[2], str):
-                        args[2] = getattr(self, args[2])
-                    if isinstance(args[3], str):
-                        args[3] = getattr(self, args[3])
-
-                    setattr(self, args[4], args[0] * Vec3(args[1], args[2], args[3]))
-
-                case "PRINT_VAR":
-                    print(getattr(self, args[0]))
-
-                case "MIN_VEC_AND_STORE":
-                    if isinstance(args[0], str):
-                        args[0] = getattr(self, args[0])
-
-                    if isinstance(args[1], str):
-                        args[1] = getattr(self, args[1])
-                    if isinstance(args[2], str):
-                        args[2] = getattr(self, args[2])
-                    if isinstance(args[3], str):
-                        args[3] = getattr(self, args[3])
-
-                    setattr(self, args[4], args[0] - Vec3(args[1], args[2], args[3]))
+                    setattr(self, var_name, args[0] * args[1])
 
                 case "MIN_VEC":
                     if isinstance(args[0], str):
@@ -189,25 +166,11 @@ class BehaviurScript:
 
                     if isinstance(args[1], str):
                         args[1] = getattr(self, args[1])
-                    if isinstance(args[2], str):
-                        args[2] = getattr(self, args[2])
-                    if isinstance(args[3], str):
-                        args[3] = getattr(self, args[3])
+                    
+                    if len(args) == 3:
+                        var_name = args[2]
 
-                    setattr(self, var_name, args[0] - Vec3(args[1], args[2], args[3]))
-
-                case "ADD_VEC_AND_STORE":
-                    if isinstance(args[0], str):
-                        args[0] = getattr(self, args[0])
-
-                    if isinstance(args[1], str):
-                        args[1] = getattr(self, args[1])
-                    if isinstance(args[2], str):
-                        args[2] = getattr(self, args[2])
-                    if isinstance(args[3], str):
-                        args[3] = getattr(self, args[3])
-
-                    setattr(self, args[4], args[0] + Vec3(args[1], args[2], args[3]))
+                    setattr(self, var_name, args[0] - args[1])
 
                 case "ADD_VEC":
                     if isinstance(args[0], str):
@@ -216,25 +179,11 @@ class BehaviurScript:
 
                     if isinstance(args[1], str):
                         args[1] = getattr(self, args[1])
-                    if isinstance(args[2], str):
-                        args[2] = getattr(self, args[2])
-                    if isinstance(args[3], str):
-                        args[3] = getattr(self, args[3])
+                    
+                    if len(args) == 3:
+                        var_name = args[2]
 
-                    setattr(self, var_name, args[0] + Vec3(args[1], args[2], args[3]))
-
-                case "DIV_VEC_AND_STORE":
-                    if isinstance(args[0], str):
-                        args[0] = getattr(self, args[0])
-
-                    if isinstance(args[1], str):
-                        args[1] = getattr(self, args[1])
-                    if isinstance(args[2], str):
-                        args[2] = getattr(self, args[2])
-                    if isinstance(args[3], str):
-                        args[3] = getattr(self, args[3])
-
-                    setattr(self, args[4], args[0] / Vec3(args[1], args[2], args[3]))
+                    setattr(self, var_name, args[0] + args[1])
 
                 case "DIV_VEC":
                     if isinstance(args[0], str):
@@ -243,12 +192,11 @@ class BehaviurScript:
 
                     if isinstance(args[1], str):
                         args[1] = getattr(self, args[1])
-                    if isinstance(args[2], str):
-                        args[2] = getattr(self, args[2])
-                    if isinstance(args[3], str):
-                        args[3] = getattr(self, args[3])
+                    
+                    if len(args) == 3:
+                        var_name = args[2]
 
-                    setattr(self, var_name, args[0] / Vec3(args[1], args[2], args[3]))
+                    setattr(self, var_name, args[0] / args[1])
 
                 case "ROTATE_FROM_DIRECTION_VECTOR":
 
@@ -266,16 +214,6 @@ class BehaviurScript:
                             @ Matrix44.from_translation(position)
                         )
                         return_status[0] = True
-
-                case "MUL_VEC_INT":
-                    if isinstance(args[0], str):
-                        var_name = args[0]
-                        args[0] = getattr(self, args[0])
-
-                    if isinstance(args[1], str):
-                        args[1] = getattr(self, args[1])
-
-                    setattr(self, var_name, args[0] * args[1])
 
                 case "MOVE_TO":
                     if isinstance(args[0], str):
@@ -314,21 +252,7 @@ class BehaviurScript:
                         else:
                             break
 
-                case "MIN_VEC_VEC_STORE":
-                    if isinstance(args[0], str):
-                        if args[0] == "position":
-                            args[0] = Vec3(*instance[3][:3])
-                        else:
-                            args[0] = getattr(self, args[0])
-
-                    if isinstance(args[1], str):
-                        if args[1] == "position":
-                            args[1] = Vec3(*instance[3][:3])
-                        else:
-                            args[1] = getattr(self, args[1])
-
-
-                    setattr(self, args[2], args[0] - args[1])
+                    
 
         if idx+1 == len(instructions): return_status[1] = True
 
@@ -363,28 +287,16 @@ def SET_VARIABLE(var_name, value): pass
 @from_func_to_BS_func
 def ROTATE(rotate_vec): pass
 @from_func_to_BS_func
-def MULT_VEC(vec, x_mul, y_mul, z_mul): pass
-@from_func_to_BS_func
-def MULT_VEC_AND_STORE(vec, x_mul, y_mul, z_mul, new_var_name): pass
-@from_func_to_BS_func
 def PRINT_VAR(var_name): pass
 @from_func_to_BS_func
-def MIN_VEC(vec, x_min, y_min, z_min): pass
+def MULT_VEC(vec, other, variable_to_store=None): pass
 @from_func_to_BS_func
-def MIN_VEC_AND_STORE(vec, x_min, y_min, z_min, new_var_name): pass
+def MIN_VEC(vec, other, variable_to_store=None): pass
 @from_func_to_BS_func
-def ADD_VEC(vec, x_min, y_min, z_min): pass
+def ADD_VEC(vec, other, variable_to_store=None): pass
 @from_func_to_BS_func
-def ADD_VEC_AND_STORE(vec, x_min, y_min, z_min, new_var_name): pass
-@from_func_to_BS_func
-def DIV_VEC(vec, x_min, y_min, z_min): pass
-@from_func_to_BS_func
-def DIV_VEC_AND_STORE(vec, x_min, y_min, z_min, new_var_name): pass
+def DIV_VEC(vec, other, variable_to_store=None): pass
 @from_func_to_BS_func
 def ROTATE_FROM_DIRECTION_VECTOR(dir_vec, yaw_offset_degrees=0): pass
 @from_func_to_BS_func
-def MUL_VEC_INT(vec1, int1): pass
-@from_func_to_BS_func
 def MOVE_TO(pos:Vec3, time): pass
-@from_func_to_BS_func
-def MIN_VEC_VEC_STORE(vec1, vec2, var_nam): pass

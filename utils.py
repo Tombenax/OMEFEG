@@ -307,6 +307,8 @@ class SoundPlayer:
         else:
             return False
 
+sp = SoundPlayer()
+
 import asyncio
 try:
     from desktop_notifier import DesktopNotifier, Icon
@@ -407,21 +409,21 @@ thing += "\n]"
 print(thing)
 """
 
-_SQUARE_RANGE_VALUES_1_LAYER = [
-                        Vec3(-1, 0, -1), Vec3(0, 0, -1), Vec3(1, 0, -1),
-                        Vec3(-1, 0, 0), Vec3(0, 0, 0), Vec3(1, 0, 0),
-                        Vec3(-1, 0, 1), Vec3(0, 0, 1), Vec3(1, 0, 1)
-                       ]
+def generate_square_range_lookup(layers) -> list[Vec3]:
+    thing = []
+    for radius in range(layers + 1):
+        for x in range(-radius, radius + 1):
+            for z in range(-radius, radius + 1):
+                if max(abs(x), abs(z)) == radius:
+                    thing.append(Vec3(x, 0, z))
 
-_SQUARE_RANGE_VALUES_3_LAYER = [
-                                Vec3(-3, 0, -3), Vec3(-3, 0, -2), Vec3(-3, 0, -1), Vec3(-3, 0, 0), Vec3(-3, 0, 1), Vec3(-3, 0, 2), Vec3(-3, 0, 3), 
-                                Vec3(-2, 0, -3), Vec3(-2, 0, -2), Vec3(-2, 0, -1), Vec3(-2, 0, 0), Vec3(-2, 0, 1), Vec3(-2, 0, 2), Vec3(-2, 0, 3), 
-                                Vec3(-1, 0, -3), Vec3(-1, 0, -2), Vec3(-1, 0, -1), Vec3(-1, 0, 0), Vec3(-1, 0, 1), Vec3(-1, 0, 2), Vec3(-1, 0, 3), 
-                                Vec3(0, 0, -3), Vec3(0, 0, -2), Vec3(0, 0, -1), Vec3(0, 0, 0), Vec3(0, 0, 1), Vec3(0, 0, 2), Vec3(0, 0, 3), 
-                                Vec3(1, 0, -3), Vec3(1, 0, -2), Vec3(1, 0, -1), Vec3(1, 0, 0), Vec3(1, 0, 1), Vec3(1, 0, 2), Vec3(1, 0, 3), 
-                                Vec3(2, 0, -3), Vec3(2, 0, -2), Vec3(2, 0, -1), Vec3(2, 0, 0), Vec3(2, 0, 1), Vec3(2, 0, 2), Vec3(2, 0, 3), 
-                                Vec3(3, 0, -3), Vec3(3, 0, -2), Vec3(3, 0, -1), Vec3(3, 0, 0), Vec3(3, 0, 1), Vec3(3, 0, 2), Vec3(3, 0, 3), 
-                               ]
+    return thing
+
+_SQUARE_RANGE_VALUES_1_LAYER = generate_square_range_lookup(1)
+
+_SQUARE_RANGE_VALUES_3_LAYER = generate_square_range_lookup(3)
+
+_SQUARE_RANGE_VALUES_32_LAYER = generate_square_range_lookup(32)
 
 def square_range_1_layers(center:Vec3, step=1):
 
@@ -444,7 +446,18 @@ def check_and_return(center, step):
     return False
 
 
+def square_range_32_layers(center:Vec3, step=1):
 
+    global last_arg
+
+    if not check_and_return(center, step):
+        return last_arg
+
+    stp_v = Vec3(step, 0, step)
+
+    last_arg = [(x * stp_v + center).xz for x in _SQUARE_RANGE_VALUES_32_LAYER]
+
+    return last_arg
 
 def square_range_3_layers(center:Vec3, step=1):
 
@@ -909,13 +922,11 @@ TEXTURE_CTORS: tuple[type, ...] = (
 )
 
 
-def get_block(name: str, position: Vec3 | Sequence[Number]):
-    # No @cache on purpose: positions are unique per block, so the cache
-    # never hit and pinned every Block ever created in RAM forever (plus
-    # a str() key built per block). Plain factory is faster overall.
-    ctor = _BLOCK_CTOR_BY_NAME.get(name)
-    if ctor is not None:
-        return ctor(position)
+def get_block(name: str | int, position: Vec3 | Sequence[Number]):
+    if isinstance(name, str):
+        return _BLOCK_CTOR_BY_NAME[name](position)
+    elif isinstance(name, int):
+        return TEXTURE_CTORS[name](position)
 
     print(Fore.YELLOW + f"Unrecognized block: {name}")
     print(Style.RESET_ALL)

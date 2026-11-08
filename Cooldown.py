@@ -16,5 +16,5 @@ class Cooldown:
         
         elif time.time() - self.last_activation >= self.time:
             self.activable = True
-
+        
         return False

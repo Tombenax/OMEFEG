@@ -1,5 +1,8 @@
+import check_and_install_packages
+
+del check_and_install_packages
+
 import datetime
-from itertools import cycle
 from Cooldown import Cooldown
 import os
 import sys
@@ -39,6 +42,8 @@ from network import Network
 import threading
 import struct
 from Vec3 import Vec3
+
+from Items3D import Items3D
 
 class sin:
     def __init__(self) -> None:
@@ -306,7 +311,7 @@ PLAYER = None
 NPCS = None
 
 def init(render):
-    global TEXT, coll, WORLD, RENDER_DISTANCE, NETWORK, PLAYERS, min_x, max_x, min_y, max_y, hud, SLECTED, menus, selected, MULTIPLAYER, LOAD_WORLD, PLAYER, NPCS, TEST_ENTITY
+    global TEXT, coll, WORLD, RENDER_DISTANCE, NETWORK, PLAYERS, min_x, max_x, min_y, max_y, hud, SLECTED, menus, selected, MULTIPLAYER, LOAD_WORLD, PLAYER, NPCS, TEST_ENTITY, ITEMS, coldbar
 
     PLAYER = Player(render)
 
@@ -320,6 +325,11 @@ def init(render):
 
     NPCS.play_animation("NPC", "Idle")
 
+    ITEMS = Items3D(render)
+
+    coldbar = INVSCR(render, scale=2.5)
+
+    ITEMS.add_item(Vec3(10, 1001, 0), "assets/models/Backpack.obj", BACKPACK)
 
     menus.load_template("mainscreen", "assets/layouts/main_screen.json", {"load_world": lambda: set_variable("load_world"), "erase_world": lambda: set_variable("erase_world"), "multiplayer": lambda: set_variable("multiplayer")})
     menus.activate("mainscreen")
@@ -452,9 +462,9 @@ def init(render):
                     heightmap = sin()
                     sin_world = True
 
-    WORLD = World(render, 1000, [0, 0, 0], 100) #, random_seed, heightmap, rules, sin_world=sin_world, biomes = not FLAT, persistent=(not MULTIPLAYER and not NO_SAVE))
+    WORLD = World(render, 1_000_000, [0, 0, 0], 100) #, random_seed, heightmap, rules, sin_world=sin_world, biomes = not FLAT, persistent=(not MULTIPLAYER and not NO_SAVE))
 
-    PLAYER.set_pos(Vec3(0, 1001, 0))
+    PLAYER.set_pos(Vec3(0, WORLD.radius+1, 0))
 
     TEST_ENTITY = Entitys(render)
 
@@ -464,7 +474,8 @@ def init(render):
 
         "update":[
             START_ANIMATION("Idle", True),
-            RANDOM_NUMBER(2, 6, "RAND_TIME_IDLE"),
+            RANDOM_NUMBER(1, 3, "RAND_TIME_IDLE"),
+            MULT_VEC("RAND_TIME_IDLE", 2, "RAND_TIME_IDLE"),
             WAIT("RAND_TIME_IDLE"),
 
             START_ANIMATION("IdleToWalk", False),
@@ -477,10 +488,10 @@ def init(render):
 
             #calculate direction
 
-            MIN_VEC_VEC_STORE("position", "PLAYER_POS", "DIR_VECT"),
+            MIN_VEC("position", "PLAYER_POS", "DIR_VECT"),
 
-            MULT_VEC("DIR_VECT", 1, 0, 1),
-            MULT_VEC("DIR_VECT", -1, 0, -1),
+            MULT_VEC("DIR_VECT", Vec3(1, 0, 1)),
+            MULT_VEC("DIR_VECT", Vec3(-1, 0, -1)),
 
             #MUL_VEC_INT("RAND_VECT", "RAND_TIME_MOVE"),
 
@@ -489,13 +500,7 @@ def init(render):
         ]
     })
 
-    TEST_ENTITY.add_entity("assets/models/cat.omefeg", Vec3(0, 1001, 0), BS)
-
-    #TEST_ENTITY.MODEL.play_animation(ent_name, "Idle", True)
-
-    #render.CAMERA.position[0] = 0
-    #render.CAMERA.position[1] = 0
-    #render.CAMERA.position[2] = 0
+    TEST_ENTITY.add_entity("assets/models/cat.omefeg", Vec3(0, WORLD.radius+1, 0), BS)
 
     if LOAD_WORLD:
         saved_player = open_save_file("player.bin", load_player)
@@ -567,12 +572,8 @@ def init(render):
     SLECTED.add_model("selected", vertices=v, indices=i)
     SLECTED.add_instances([Vec3(0, 0, 0)], [12], "selected")
 
-    coll = Collectible(render)
-
     pos = WORLD.get_block_y_at(PLAYER.pos[0]+5, PLAYER.pos[2])
     pos += 1
-
-    coll.add_collectibles([Vec3(PLAYER.pos[0]+5, pos, PLAYER.pos[2])], [0], [colletced])
 
     hud = HUDText(
     render=render,
@@ -582,9 +583,9 @@ def init(render):
     # Top-left status texts stay left-aligned (centered would push them)
     # half off-screen); menus default to centered.
     hud.add_texts(
-        ["FPS: negative Infinity", "SELECTED BLOCK: birch leave", "X: HELL NAH Y: NEGATIVE INFINITY Z: EASTER EGGS BE LIKE", "BPS: FUCK MYSELF"],
-        [[0, 0], [0, 30], [WIDTH, 0], [WIDTH, 30]],
-        ["FPS", "sb", "XYZ", "bps"],
+        ["FPS: negative Infinity", "X: HELL NAH Y: NEGATIVE INFINITY Z: EASTER EGGS BE LIKE", "BPS: FUCK MYSELF"],
+        [[0, 0], [0, 30], [WIDTH, 0]],
+        ["FPS", "XYZ", "bps"],
         centered=False,
     )
 
@@ -987,9 +988,6 @@ def stop_multiplayer_thread():
 frames_passed = 0
 start_second = time.time()
 
-blocks_textures = ["birch_leave", "birch_log", "cobblestone", "dirt", "grass", "oak_leave", "oak_log", "oak_planks", "sand", "stone", "water"]
-generator = cycle(blocks_textures)
-selected_block = next(generator)
 pressed = False
 cooldown = Cooldown(0.2)
 cooldown2 = Cooldown(0.2)
@@ -1016,7 +1014,7 @@ def update(render:Render):
     global pressed,blocks_placed, blocks_broken
     global pause, start_pos, MULTIPLAYER
     global LOAD_WORLD, sound_player, last_asked
-    global TEST_ENTITY
+    global TEST_ENTITY, ITEMS, coldbar
 
     last_asked += 1
 
@@ -1048,7 +1046,7 @@ def update(render:Render):
         return
 
     if render.get_key(render.KEY_R):
-        PLAYER.set_pos(Vec3(0, 1005, 0))
+        PLAYER.set_pos(Vec3(0, WORLD.radius+1, 0))
 
     #play EPIC music
     if not sound_player.is_playing(render.dt) and settings["audio"]:
@@ -1058,21 +1056,15 @@ def update(render:Render):
         sound_player.stop()
 
     inted_camera = Vec3(*(math.floor(coord) for coord in PLAYER.pos))
-    camera_chunk_pos = Vec3(
-        int(str(int(inted_camera[0]))[:-1] + "0"),
-        int(str(int(inted_camera[1]))[:-1] + "0"),
-        int(str(int(inted_camera[2]))[:-1] + "0"),
-    )
+    camera_chunk_pos = inted_camera // 10 * 10
 
     if last_asked >= ASK_EVERY and not WORLD.generate_all_chunks:
         last_asked = 0
         for x, z in square_range_3_layers(camera_chunk_pos, 10):
-            WORLD.generate_chunk(x, int(inted_camera[1]), z)
+            WORLD.generate_chunk(x, camera_chunk_pos.y, z)
 
     PLAYER.update(WORLD)
-    coll.update(PLAYER.pos)
-    coll.render()
-    block_placed, block_removed = None, None
+    block_placed = None
 
     if result := raycast(WORLD.get_neighbours_extened_in_circle(PLAYER.pos, 10), render.CAMERA.eye_pos, render.CAMERA.front): #eye_pos bc ray starts from eyes
         position, normal = result
@@ -1102,29 +1094,18 @@ def update(render:Render):
             # place_block cascades Block.update() products; sync every
             # placed block so remotes reproduce the same result.
             # (block_placed keeps its old meaning for mods: the clicked block.)
-            block_placed = (selected_block, position + normal)
-            _new_blocks = WORLD.place_block(get_block(*block_placed))
-            if _new_blocks:
-                # Single lock acquisition for the whole batch (was one
-                # lock per block).
-                with _mp_lock:
-                    _room = 500 - len(blocks_placed)
-                    if _room > 0:
-                        for new_block in _new_blocks[:_room]:
-                            blocks_placed.append(
-                                (new_block.block, new_block.position.tolist()))
+            block_placed = (PLAYER.get_selcted_block(), position + normal)
+            if block_placed[0] is not None:
+                WORLD.place_block(get_block(*block_placed))
 
         if render.get_mouse_button(render.MOUSE_BUTTON_RIGHT) == render.PRESS and cooldown2.is_active:
-            WORLD.destroy_block(WORLD.get_block_at(position))
-            block_removed = position
-            with _mp_lock:
-                if len(blocks_broken) < 500:
-                    blocks_broken.append(block_removed.tolist())
+            block = WORLD.get_block_at(position)
+            WORLD.destroy_block(block)
+            ITEMS.add_item(position, "assets/models/block.obj", block.texture)
 
     if MULTIPLAYER:
         process_multiplayer(PLAYERS, blocks_placed, blocks_broken, PLAYER.camera)
 
-    # Cached mod funcs (was exec() string recompile per mod per frame).
     _g = globals()
     _l = locals()
     for _update_fn in mods_update_funcs:
@@ -1136,6 +1117,9 @@ def update(render:Render):
     WORLD.update()
     WORLD.render_blocks()
 
+    ITEMS.update(render.dt, PLAYER)
+    ITEMS.render()
+
     TEST_ENTITY.update(render.dt)
     TEST_ENTITY.render_entities()
 
@@ -1143,6 +1127,10 @@ def update(render:Render):
         PLAYERS.render()
 
     TEXT.render()
+
+    coldbar.render()
+
+    PLAYER.render_2D_stuff()
 
     # Single datetime call per frame (was 3x per frame).
     _now = datetime.datetime.now()
@@ -1158,18 +1146,11 @@ def update(render:Render):
         elif x.minute == 47 and start_pos is not None:
             render.set_window_pos(*start_pos)
             start_pos = None
-
-
-    if render.get_key(render.KEY_LEFT_ALT) == render.PRESS and not pressed:
-        selected_block = next(generator)
-        pressed = True
-        selected_text = "SELECTED BLOCK: " + selected_block.replace("_", " ")
-        hud.update_text("sb", selected_text, [0, 30])
         
     elif render.get_key(render.KEY_LEFT_ALT) != render.PRESS and pressed:
         pressed = False
 
-    hud.update_text("XYZ", f"X: {round(PLAYER.pos.tolist()[0])} Y: {round(PLAYER.pos.tolist()[1])} Z: {round(PLAYER.pos.tolist()[2])}", [0, 60])
+    hud.update_text("XYZ", f"X: {round(PLAYER.pos.tolist()[0])} Y: {round(PLAYER.pos.tolist()[1])} Z: {round(PLAYER.pos.tolist()[2])}", [0, 30])
 
     hud.update_text("bps", f"BPS: {render.CAMERA.bps}", [WIDTH-200, 0])
 

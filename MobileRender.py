@@ -1526,66 +1526,138 @@ class InstancedText(InstancedModel):
         return True
 
 
-class Collectible(InstancedModel):
+class Collectible:
     def __init__(self, render):
-        """
-        args:
-            render: Render instance
-        """
         self.render_ = render
-        super().__init__(
-            render=render,
-            indices=_QUAD_INDICES,
-            vertices=_QUAD_VERTICES,
-            atlas="items",
-        )
-        self.callbacks: list[callable] = []
+        self.instances = np.zeros((0, 4, 4), dtype="f4")
+        self.tex_insta = np.zeros((0,), dtype="f4")
+        self._rc = None
+        self._mesh = None
+        self._dirty = True
+        self._hud_built_for = None
+        self._is_hud = True
 
     def add_collectibles(
         self,
         positions: list[Vec3],
         textures: list[int],
-        on_collect: list[callable],
+        on_collect: list[callable] | None = None,
     ):
-        self.callbacks.extend(on_collect)
-
-        if not isinstance(positions, np.ndarray):
-            positions = np.asarray(positions, dtype="f4")
-
+        positions = np.asarray(positions, dtype="f4")
         if positions.ndim == 1:
-            positions = positions.reshape(1, 3)
+            positions = positions.reshape(1, -1)
+        if positions.ndim != 2 or positions.shape[1] < 2:
+            raise ValueError("collectible positions must contain x and y coordinates")
+        if len(positions) != len(textures):
+            raise ValueError("positions and textures must have the same length")
 
-        new_models = np.eye(4, dtype="f4").reshape(1, 4, 4)
-        new_models = np.repeat(new_models, len(positions), axis=0)
+        new_models = np.repeat(
+            np.eye(4, dtype="f4").reshape(1, 4, 4),
+            len(positions),
+            axis=0,
+        )
         new_models[:, 3, 0] = positions[:, 0]
         new_models[:, 3, 1] = positions[:, 1]
-        new_models[:, 3, 2] = positions[:, 2]
-
         self.instances = np.concatenate((self.instances, new_models))
-
         self.tex_insta = np.concatenate(
-            (self.tex_insta, np.array(textures, dtype="f4"))
+            (self.tex_insta, np.asarray(textures, dtype="f4"))
         )
-
-        self._upload()
+        self._dirty = True
 
     def update(self, player_position: Vec3):
-        for i, instance in enumerate(self.instances):
-            a = Vec3(*instance[3][:3])
+        pass
 
-            if distance(a, player_position) < 3:
-                self.instances = np.delete(self.instances, i, axis=0)
-                self.tex_insta = np.delete(self.tex_insta, i, axis=0)
-                self.callbacks[i](self.render_)
-                continue
+    def _screen_size(self):
+        return (int(self.render_._win_w), int(self.render_._win_h))
 
-            x = Matrix44.from_x_rotation(self.render_.dt)
-            y = Matrix44.from_y_rotation(self.render_.dt)
-            z = Matrix44.from_z_rotation(self.render_.dt)
+    def _ensure_hud_gl(self):
+        if self._rc is not None:
+            return True
+        render = self.render_
+        if not getattr(render, "_gl_ready", False):
+            return False
+        try:
+            texture = render._texture("items")
+            if texture is None:
+                return False
+            rc = RenderContext()
+            _set_shaders(rc, _HUD_VERTEX, _HUD_FRAGMENT)
+            with rc:
+                BindTexture(texture=texture, index=2)
+                self._mesh = Mesh(
+                    fmt=_MESH_FMT,
+                    mode="triangles",
+                    vertices=[0.0] * 8,
+                    indices=[0, 0, 0],
+                )
+            rc["atlasTex"] = 2
+            render._attach_hud_rc(rc)
+            self._rc = rc
+            return True
+        except Exception:
+            self._rc = None
+            self._mesh = None
+            return False
 
-            self.instances[i] = (x @ y @ z @ instance).astype("f4")
+    def _rebuild_screen_mesh(self):
+        screen_width, screen_height = self._screen_size()
+        if screen_width <= 0 or screen_height <= 0:
+            return
 
-        self._upload()
+        tile_w, tile_h, atlas_w, atlas_h = _ATLASES["items"]
+        columns = max(int(atlas_w // tile_w), 1)
+        rows = max(int(atlas_h // tile_h), 1)
+        corners = (
+            (0.0, 0.0, 0.0, 0.0),
+            (0.0, 1.0, 0.0, 1.0),
+            (1.0, 1.0, 1.0, 1.0),
+            (1.0, 1.0, 1.0, 1.0),
+            (1.0, 0.0, 1.0, 0.0),
+            (0.0, 0.0, 0.0, 0.0),
+        )
+        vertices = []
+        indices = []
+        for instance, layer_value in zip(self.instances, self.tex_insta):
+            layer = int(layer_value)
+            column = layer % columns
+            row_bottom = layer // columns
+            base = len(vertices) // 8
+            for qx, qy, qu, qv in corners:
+                px = float(instance[3, 0]) + qx * tile_w
+                py = float(instance[3, 1]) + qy * tile_h
+                nx = px / screen_width * 2.0 - 1.0
+                ny = 1.0 - py / screen_height * 2.0
+                u = (column + qu) * tile_w / atlas_w
+                v = (row_bottom + 1.0 - qv) * tile_h / atlas_h
+                vertices.extend((nx, ny, 0.0, 0.0, 0.0, 1.0, u, v))
+            indices.extend((base, base + 1, base + 2, base + 3, base + 4, base + 5))
+
+        self.vertices_all = np.asarray(vertices, dtype="f4").reshape(-1, 8)
+        self.indices_all = np.asarray(indices, dtype="i4")
+        self._hud_built_for = (screen_width, screen_height)
+        self._dirty = True
+
+    def _sync_mesh(self):
+        if self._mesh is None:
+            return
+        if self.vertices_all.shape[0] == 0:
+            self.render_._set_rc_visible(self._rc, False, hud=True)
+            return
+        self._mesh.vertices = self.vertices_all.reshape(-1).tolist()
+        self._mesh.indices = self.indices_all.tolist()
+        self.render_._set_rc_visible(self._rc, True, hud=True)
+        self._dirty = False
+
+    def render(self):
+        if not self._ensure_hud_gl():
+            return
+        if not len(self.instances):
+            self.render_._set_rc_visible(self._rc, False, hud=True)
+            return
+        if self._hud_built_for != self._screen_size():
+            self._rebuild_screen_mesh()
+        if self._dirty:
+            self._sync_mesh()
 
 
 class HUDText(InstancedText):

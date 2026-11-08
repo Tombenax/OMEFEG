@@ -1,4 +1,4 @@
-#version 330
+#version 400
 
 in vec3 v_normal;
 in vec3 v_fragPos;
@@ -9,8 +9,8 @@ out vec4 fragColor;
 
 uniform sampler2DArray atlasArray;
 uniform bool enable_shaders;
-uniform vec3 lightPos;
-uniform vec3 viewPos;
+uniform dvec3 lightPos;
+uniform dvec3 viewPos;
 
 uniform bool enable_funky_shaders;
 uniform int frame;
@@ -34,6 +34,7 @@ float rand(vec2 pixel, uint frame)
 }
 
 void main() {
+    dvec3 worldPos = dvec3(v_fragPos) + viewPos;
     // Always sample layer 0 because the whole atlas is layer 0
     vec4 tex = texture(atlasArray, vec3(v_uv, 0));
 
@@ -54,13 +55,13 @@ void main() {
     vec3 color = tex.rgb;
     vec3 norm = normalize(v_normal);
 
-    vec3 lightDir = normalize(lightPos - v_fragPos);
+    vec3 lightDir = normalize(vec3(lightPos - worldPos));
     float diff = max(dot(norm, lightDir), 0.0);
 
     vec3 ambient = 0.4 * color;
     vec3 diffuse = diff * color;
 
-    vec3 viewDir = normalize(viewPos - v_fragPos);
+    vec3 viewDir = normalize(vec3(viewPos - worldPos));
     vec3 reflectDir = reflect(-lightDir, norm);
     float spec = pow(max(dot(viewDir, reflectDir), 0.0), 16.0);
 

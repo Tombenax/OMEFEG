@@ -151,6 +151,9 @@ class Vec3:
     def __truediv__(self, other):
         return Vec3(*(self._xyz / (other._xyz if isinstance(other, Vec3) else other)))
 
+    def __floordiv__(self, other):
+        return Vec3(*(self._xyz // (other._xyz if isinstance(other, Vec3) else other)))
+
     def __neg__(self):
         return Vec3(*(-self._xyz))
 
@@ -168,6 +171,10 @@ class Vec3:
 
     def __itruediv__(self, other):
         self._xyz /= other._xyz if isinstance(other, Vec3) else other
+        return self
+
+    def __ifloordiv__(self, other):
+        self._xyz //= other._xyz if isinstance(other, Vec3) else other
         return self
 
     def set_xyz(self, x, y, z):

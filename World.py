@@ -293,9 +293,12 @@ class World:
         self.last_update_time = time.time()
         self.UPDATE_INTERVAL = 0.2
         self.blocksInstancedModel = InstancedModel(render=render, vertices=CUBE_MODEL_INFO[0], indices=CUBE_MODEL_INFO[1])
+        self.merge_triangles = False
+        self._mesh_merging_enabled = self.merge_triangles
         self._mesh_region_blocks = {}
         self._mesh_occupied = {}
         self._rotated_positions = set()
+        self._block_rotations = {}
         self._greedy_models = {}
         self._dirty_mesh_regions = set()
         self.generated_chunks = set()
@@ -314,6 +317,8 @@ class World:
         self.can_generate_any_chunks = True
 
         self.last_xyz = None
+
+        self._last_idx = None
 
         if self.generate_all_chunks:
             self.generate_entire_world()
@@ -359,6 +364,7 @@ class World:
         position = self._block_key(block.position)
         region_key = self._mesh_region_key(position)
         rotated = any(abs(float(value)) > 1e-6 for value in rotation)
+        self._block_rotations[position] = tuple(rotation)
         region = self._mesh_region_blocks.setdefault(region_key, {})
         if rotated:
             region.pop(position, None)
@@ -371,7 +377,40 @@ class World:
             self._mesh_occupied[position] = block.texture
             self._rotated_positions.discard(position)
         self._mark_mesh_region_dirty(position)
-        return position, rotated
+        return position, rotated or not self.merge_triangles
+
+    def _sync_triangle_merging(self):
+        if self.merge_triangles == self._mesh_merging_enabled:
+            return
+
+        self.blocksInstancedModel.remove_instances(
+            self.blocks.positions, upload=False
+        )
+        if self.merge_triangles:
+            blocks = [
+                block for block in self.blocks.blocks_list
+                if self._block_key(block.position) in self._rotated_positions
+            ]
+            for position in self._mesh_occupied:
+                self._mark_mesh_region_dirty(position)
+        else:
+            blocks = self.blocks.blocks_list
+            for region_key in tuple(self._greedy_models):
+                self._release_greedy_model(region_key)
+            self._dirty_mesh_regions.clear()
+
+        if blocks:
+            self.blocksInstancedModel.add_instances(
+                [block.position for block in blocks],
+                [block.texture for block in blocks],
+                [self._block_rotations.get(
+                    self._block_key(block.position), (0, 0, 0)
+                ) for block in blocks],
+                upload=False,
+            )
+        self.blocksInstancedModel._upload()
+        self._mesh_merging_enabled = self.merge_triangles
+        self.last_xyz = None
 
     def _release_greedy_model(self, region_key):
         model = self._greedy_models.pop(region_key, None)
@@ -527,9 +566,12 @@ class World:
         self.blocks.remove(block)
         position = self._block_key(block.position)
         region_key = self._mesh_region_key(position)
-        if position in self._rotated_positions:
-            self._rotated_positions.discard(position)
+        rotated = position in self._rotated_positions
+        self._block_rotations.pop(position, None)
+        if rotated or not self._mesh_merging_enabled:
             self.blocksInstancedModel.remove_instances([block.position])
+        if rotated:
+            self._rotated_positions.discard(position)
         else:
             self._mesh_occupied.pop(position, None)
             region = self._mesh_region_blocks.get(region_key)
@@ -549,9 +591,15 @@ class World:
         positions = []
         rotations = []
 
+        rem = Vec3(0, 1, 0)
+
         for pos, rot in sphere:
             positions.append(pos)
             rotations.append(rot)
+
+            for i in range(0):
+                positions.append(pos - rem * (i+1))
+                positions.append(rot)
 
         textures = [GRASS] * len(positions)
 
@@ -599,15 +647,64 @@ class World:
     def get_block_y_at(self, x, z):
         return 1
 
+    def place_chunks_step(self):
+
+        if self._last_idx is None:
+            try:
+                sphere = self.generate_chunk_queue.get_nowait()
+            except Empty:
+                return
+
+            self._pos = sphere[0]
+            self._rotations = sphere[1]
+            self._tex = sphere[2]
+
+            self._last_idx = 0
+
+        pos, rotations, tex = self._pos, self._rotations, self._tex
+
+        rotations = list(rotations)
+        rotated_positions, rotated_textures, rotated_rotations = [], [], []
+        for i in range(len(pos)):
+            try:
+                index, pos_, tex_ = self._last_idx, pos[self._last_idx], tex[self._last_idx]
+                
+                block = get_texture(tex_, *pos_)
+                self.blocks.add(block)
+                self.update_queue.put(block.update(self.get_neighbours(block.position)))
+                rotation = rotations[index] if index < len(rotations) else (0, 0, 0)
+                _position, rotated = self._track_block_for_mesh(block, rotation)
+                if rotated:
+                    rotated_positions.append(block.position)
+                    rotated_textures.append(block.texture)
+                    rotated_rotations.append(rotation)
+
+                self._last_idx += 1
+
+            except IndexError:
+                break
+
+        if self._last_idx == len(pos):
+            self._last_idx = None
+
+            if rotated_positions:
+                self.blocksInstancedModel.add_instances(
+                    rotated_positions, rotated_textures, rotated_rotations
+                )
+                
+
     def render_blocks(self):
 
         self.place_chunks()
 
+        self._sync_triangle_merging()
+
         model:InstancedModel = self.blocksInstancedModel
-        dirty_regions = self._dirty_mesh_regions
-        self._dirty_mesh_regions = set()
-        for region_key in dirty_regions:
-            self._rebuild_greedy_region(region_key)
+        if self.merge_triangles:
+            dirty_regions = self._dirty_mesh_regions
+            self._dirty_mesh_regions = set()
+            for region_key in dirty_regions:
+                self._rebuild_greedy_region(region_key)
 
 
         cam = getattr(self.render, "CAMERA", None)
@@ -616,7 +713,8 @@ class World:
         if cam is None:
             if len(model.instances):
                 model.render()
-            self._render_greedy_models()
+            if self.merge_triangles:
+                self._render_greedy_models()
             return
 
         try:
@@ -624,7 +722,8 @@ class World:
         except Exception:
             if len(model.instances):
                 model.render()
-            self._render_greedy_models()
+            if self.merge_triangles:
+                self._render_greedy_models()
             print("Exception at 451 in World.py")
             return
 
@@ -656,7 +755,8 @@ class World:
 
         if len(model.instances):
             model.render()
-        self._render_greedy_models(cam_pos)
+        if self.merge_triangles:
+            self._render_greedy_models(cam_pos)
 
     
     def get_block_at(self, position:Vec3 | Sequence[Number]):

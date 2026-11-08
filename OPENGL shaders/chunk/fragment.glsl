@@ -1,4 +1,4 @@
-#version 330
+#version 400
 
 in vec3 v_normal;
 in vec3 v_fragPos;
@@ -10,31 +10,33 @@ out vec4 fragColor;
 uniform sampler2DArray atlasArray;
 uniform bool enable_shaders;
 uniform sampler3D blockOccupancy;
-uniform vec3 lightPositions[16];
+uniform dvec3 lightPositions[16];
 uniform vec4 lightColors[16];
 uniform int lightCount;
 uniform float TEXTURE_W;
 uniform float TEXTURE_H;
 uniform float ATLAS_W;
 uniform float ATLAS_H;
-uniform vec3 worldMin;
+uniform dvec3 worldMin;
 uniform ivec3 worldSize;
-uniform vec3 viewPos;
+uniform dvec3 viewPos;
 
-float lightTransmittance(vec3 from, vec3 to)
+float lightTransmittance(dvec3 from, dvec3 to)
 {
-    vec3 ray = to - from;
-    float maxDistance = length(ray);
+    dvec3 ray = to - from;
+    double maxDistance = length(ray);
     if (maxDistance <= 0.001)
         return 1.0;
 
-    vec3 direction = ray / maxDistance;
-    vec3 start = from + direction * 0.001;
+    dvec3 direction = ray / maxDistance;
+    dvec3 start = from + direction * 0.001;
     // worldMin is the minimum *corner* of the occupancy volume
     // (block minimum - 0.5), because blocks are centered cubes
     // spanning [P-0.5, P+0.5]. cell = floor(start - worldMin) then maps
     // block P to texel P - minimum, matching update_block_occupancy.
-    vec3 localStart = start - worldMin;
+    vec3 localStart = vec3(start - worldMin);
+    vec3 localDirection = vec3(direction);
+    float localMaxDistance = float(maxDistance);
     ivec3 cell = ivec3(floor(localStart));
 
     bool startOutside =
@@ -58,14 +60,14 @@ float lightTransmittance(vec3 from, vec3 to)
             transmittance = 0.5;
     }
 
-    ivec3 cellStep = ivec3(sign(direction));
-    vec3 nextBoundary = vec3(cell) + step(vec3(0.0), direction);
+    ivec3 cellStep = ivec3(sign(localDirection));
+    vec3 nextBoundary = vec3(cell) + step(vec3(0.0), localDirection);
     // Division by zero is undefined in GLSL, and axis-aligned rays
     // (light straight above) are the common case, so use a safe inverse.
     vec3 invDir = vec3(
-        abs(direction.x) > 1e-8 ? 1.0 / direction.x : 1e8,
-        abs(direction.y) > 1e-8 ? 1.0 / direction.y : 1e8,
-        abs(direction.z) > 1e-8 ? 1.0 / direction.z : 1e8
+        abs(localDirection.x) > 1e-8 ? 1.0 / localDirection.x : 1e8,
+        abs(localDirection.y) > 1e-8 ? 1.0 / localDirection.y : 1e8,
+        abs(localDirection.z) > 1e-8 ? 1.0 / localDirection.z : 1e8
     );
     vec3 tMax = (nextBoundary - localStart) * invDir;
     vec3 tDelta = abs(invDir);
@@ -89,7 +91,7 @@ float lightTransmittance(vec3 from, vec3 to)
             tMax.z += tDelta.z;
         }
 
-        if (travelled >= maxDistance)
+        if (travelled >= localMaxDistance)
             break;
         // Do not break when outside: an outer-skin surface origin starts
         // just outside the volume and the ray may enter it on the next
@@ -107,17 +109,17 @@ float lightTransmittance(vec3 from, vec3 to)
     return transmittance;
 }
 
-float lightVisibility(vec3 surface, vec3 normal, vec3 lightPosition)
+float lightVisibility(dvec3 surface, vec3 normal, dvec3 lightPosition)
 {
     // Blocks are centered cubes (block.obj spans +/-0.5), so cast from
     // just above the surface. Casting from floor(surface) + 0.5 starts
     // 0.5 deep inside the solid (over-shadowing grazing angles) and
     // mis-attributes -X/-Y/-Z faces to the neighbouring voxel.
-    vec3 origin = surface + normal * 0.02;
+    dvec3 origin = surface + dvec3(normal) * 0.02;
     return lightTransmittance(origin, lightPosition);
 }
 
-float skyVisibility(vec3 surface, vec3 normal)
+float skyVisibility(dvec3 surface, vec3 normal)
 {
     // Sky/ambient occlusion: the constant ambient term below is what kept
     // closed boxes readable (0.35 everywhere). Cast straight up to the sky;
@@ -125,51 +127,52 @@ float skyVisibility(vec3 surface, vec3 normal)
     // Outdoors with open sky above it misses -> ambient stays as before.
     // Note: downward faces always report 0 (own block sits between them
     // and the sky), which is correct for sky light; they get no sky.
-    vec3 origin = surface + normal * 0.02;
+    dvec3 origin = surface + dvec3(normal) * 0.02;
     // Short range on purpose: a full march to the sky costs a second
     // 96-step DDA per fragment (this halved FPS). Cover within ~8 blocks
     // (ceilings, canopies) is what darkens ambient; distant geometry is
     // the direct light's job. travelled>=maxDistance exits after ~8 voxels.
-    vec3 skyPoint = origin + vec3(0.0, 1.0, 0.0) * 8.0;
+    dvec3 skyPoint = origin + dvec3(0.0, 1.0, 0.0) * 8.0;
     return lightTransmittance(origin, skyPoint);
 }
 
-vec2 repeatedBlockUV(vec2 atlasUV, vec3 worldPos, vec3 normal)
+vec2 repeatedBlockUV(vec2 atlasUV, dvec3 worldPos, vec3 normal)
 {
     vec2 tileCount = vec2(ATLAS_W / TEXTURE_W, ATLAS_H / TEXTURE_H);
     vec2 tile = floor(atlasUV * tileCount);
-    vec2 localUV;
+    dvec2 localUV;
     vec2 faceUVOffset;
 
     if (abs(normal.z) > 0.5) {
         localUV = normal.z < 0.0
-            ? vec2(0.5 - worldPos.x, worldPos.y + 0.5)
-            : vec2(worldPos.x + 0.5, worldPos.y + 0.5);
+            ? dvec2(double(0.5) - worldPos.x, worldPos.y + double(0.5))
+            : dvec2(worldPos.x + double(0.5), worldPos.y + double(0.5));
         faceUVOffset = normal.z < 0.0
             ? vec2(0.0, 0.75)
             : vec2(0.25, 0.5);
     } else if (abs(normal.x) > 0.5) {
         localUV = normal.x > 0.0
-            ? vec2(0.5 - worldPos.z, worldPos.y + 0.5)
-            : vec2(worldPos.z + 0.5, worldPos.y + 0.5);
+            ? dvec2(double(0.5) - worldPos.z, worldPos.y + double(0.5))
+            : dvec2(worldPos.z + double(0.5), worldPos.y + double(0.5));
         faceUVOffset = normal.x > 0.0
             ? vec2(0.0, 0.5)
             : vec2(0.25, 0.5);
     } else {
         localUV = normal.y > 0.0
-            ? vec2(0.5 - worldPos.x, worldPos.z + 0.5)
-            : vec2(worldPos.x + 0.5, worldPos.z + 0.5);
+            ? dvec2(double(0.5) - worldPos.x, worldPos.z + double(0.5))
+            : dvec2(worldPos.x + double(0.5), worldPos.z + double(0.5));
         faceUVOffset = normal.y > 0.0
             ? vec2(0.0, 0.25)
             : vec2(0.5, 0.75);
     }
 
-    return (tile + faceUVOffset + fract(localUV) * 0.25) / tileCount;
+    return (tile + faceUVOffset + vec2(fract(localUV)) * 0.25) / tileCount;
 }
 
 void main() {
+    dvec3 worldPos = dvec3(v_fragPos) + viewPos;
     vec3 norm = normalize(v_normal);
-    vec2 sampleUV = repeatedBlockUV(v_uv, v_fragPos, norm);
+    vec2 sampleUV = repeatedBlockUV(v_uv, worldPos, norm);
     vec4 tex = texture(atlasArray, vec3(sampleUV, v_layer));
 
     if (tex.a < 0.1)
@@ -185,15 +188,15 @@ void main() {
     // a fully enclosed box still gets 0.35 everywhere (readable, grey).
     // Keep ~30% when occluded: pure 0 made every overhang/tree underside
     // pitch black. Tune 0.3 to taste (0.0 = black holes, 1.0 = no AO).
-    float skyVis = skyVisibility(v_fragPos, norm);
+    float skyVis = skyVisibility(worldPos, norm);
     vec3 result = 0.35 * color * mix(0.3, 1.0, skyVis);
-    vec3 viewDir = normalize(viewPos - v_fragPos);
+    vec3 viewDir = normalize(vec3(viewPos - worldPos));
 
     for (int i = 0; i < 16; i++) {
         if (i >= lightCount)
             break;
 
-        vec3 lightVector = lightPositions[i] - v_fragPos;
+        vec3 lightVector = vec3(lightPositions[i] - worldPos);
         float distanceToLight = length(lightVector);
         vec3 lightDir = lightVector / max(distanceToLight, 0.0001);
         float diff = max(dot(norm, lightDir), 0.0);
@@ -207,7 +210,7 @@ void main() {
         vec3 reflectDir = reflect(-lightDir, norm);
         float spec = pow(max(dot(viewDir, reflectDir), 0.0), 16.0);
 
-        float visibility = lightVisibility(v_fragPos, norm, lightPositions[i]);
+        float visibility = lightVisibility(worldPos, norm, lightPositions[i]);
         result += (diff * color + spec) * lightColors[i].rgb * attenuation * visibility;
     }
 

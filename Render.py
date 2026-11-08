@@ -20,6 +20,8 @@ import glfw
 
 glfw.init()
 
+PROJECTION_MAX = 1000
+
 WIDTH, HEIGHT = 1280, 720
 
 ATLAS = Image.open("assets/textures/texture.png")
@@ -44,11 +46,15 @@ ITEMS = Image.open("assets/textures/Items.png")
 
 ITEMS_W, ITEMS_H = ITEMS.size
 
-ITEM_W, ITEM_H = 16, 16
+ITEM_W, ITEM_H = 32, 32
 
 ITEMS_X, ITEMS_Y = ITEMS_W // ITEM_W, ITEMS_H // ITEM_H
 
 ITEMS_COUNT = (ITEMS_W / ITEM_W) * (ITEMS_H / ITEM_H)
+
+INVSCR_IMAGE = Image.open("assets/textures/InventoryScroll.png").convert("RGBA")
+
+INVSCR_W, INVSCR_H = INVSCR_IMAGE.size
 
 
 # Blocks that filter light instead of blocking it (leaf canopies give
@@ -69,10 +75,10 @@ def _position_match_mask(instance_positions, requested):
     Non-integral master rows can never equal integral requested tuples,
     so skipping them on the fast path is exact, not approximate.
     """
-    inst = np.ascontiguousarray(instance_positions, dtype="f4").reshape(-1, 3)
+    inst = np.ascontiguousarray(instance_positions, dtype="f8").reshape(-1, 3)
     if len(inst) == 0:
         return np.zeros((0,), dtype=bool)
-    req = np.ascontiguousarray(requested, dtype="f4").reshape(-1, 3)
+    req = np.ascontiguousarray(requested, dtype="f8").reshape(-1, 3)
     if len(req) == 0:
         return np.zeros((len(inst),), dtype=bool)
 
@@ -104,13 +110,20 @@ class Render:
     KEY_A = glfw.KEY_A
     KEY_D = glfw.KEY_D
 
+    KEY_RIGHT_ARROW = glfw.KEY_RIGHT
+    KEY_LEFT_ARROW = glfw.KEY_LEFT
+
     KEY_LEFT_CONTROL = glfw.KEY_LEFT_CONTROL
 
     KEY_F = glfw.KEY_F
 
     KEY_R = glfw.KEY_R
 
+    KEY_G = glfw.KEY_G
+
     KEY_ESCAPE = glfw.KEY_ESCAPE
+
+    KEY_LEFT_SHIFT = glfw.KEY_LEFT_SHIFT
 
     CURSOR = glfw.CURSOR
     CURSOR_NORMAL = glfw.CURSOR_NORMAL
@@ -124,7 +137,7 @@ class Render:
 
     FOV = 60
 
-    PROJECTION = np.array(Matrix44.perspective_projection(FOV, WIDTH/HEIGHT, 0.1, 100), dtype='f4')
+    PROJECTION = np.array(Matrix44.perspective_projection(FOV, WIDTH/HEIGHT, 0.1, PROJECTION_MAX), dtype='f8')
 
     def get_key(self, key:int):
         return glfw.get_key(self.window, key)
@@ -178,7 +191,7 @@ class Render:
 
         WIDTH, HEIGHT = width, height
 
-        self.PROJECTION = np.array(Matrix44.perspective_projection(self.FOV, WIDTH/HEIGHT, 0.1, 100), dtype='f4')
+        self.PROJECTION = np.array(Matrix44.perspective_projection(self.FOV, WIDTH/HEIGHT, 0.1, PROJECTION_MAX), dtype='f8')
 
     def init_programs(self):
         self.blocks_program["atlasArray"] = 0
@@ -338,8 +351,6 @@ class Render:
         self.items_texture = self.load_texture_array(ITEMS, ITEMS_H, ITEM_H, ITEMS_W, ITEM_W)
         self.items_texture.use(location=2)
 
-
-
     def create_programs(self):
         for shader_name, shaders in self.shaders.items():
             setattr(self, shader_name+"_program", self.ctx.program(*shaders))
@@ -365,19 +376,19 @@ class Render:
         self.text_program["enable_shaders"].value = shaders_enabled
         self.item_program["enable_shaders"].value = shaders_enabled
 
-        self.blocks_program["view"].write(self.CAMERA.view.astype("f4").tobytes())
-        self.blocks_program["viewPos"].write(self.CAMERA.position.xyz.astype("f4").tobytes())
+        self.blocks_program["view"].write(self.CAMERA.view.astype("f8").tobytes())
+        self.blocks_program["viewPos"].write(self.CAMERA.position.xyz.astype("f8").tobytes())
 
-        self.text_program["view"].write(self.CAMERA.view.astype("f4").tobytes())
+        self.text_program["view"].write(self.CAMERA.view.astype("f8").tobytes())
         self.text_program["lightPos"].value = (9, 50, 9)
-        self.text_program["viewPos"].write(self.CAMERA.position.xyz.astype("f4").tobytes())
+        self.text_program["viewPos"].write(self.CAMERA.position.xyz.astype("f8").tobytes())
 
-        self.chunk_program["view"].write(self.CAMERA.view.astype("f4").tobytes())
-        self.chunk_program["viewPos"].write(self.CAMERA.position.xyz.astype("f4").tobytes())
+        self.chunk_program["view"].write(self.CAMERA.view.astype("f8").tobytes())
+        self.chunk_program["viewPos"].write(self.CAMERA.position.xyz.astype("f8").tobytes())
 
-        self.item_program["view"].write(self.CAMERA.view.astype("f4").tobytes())
+        self.item_program["view"].write(self.CAMERA.view.astype("f8").tobytes())
         self.item_program["lightPos"].value = (9, 50, 9)
-        self.item_program["viewPos"].write(self.CAMERA.position.xyz.astype("f4").tobytes())
+        self.item_program["viewPos"].write(self.CAMERA.position.xyz.astype("f8").tobytes())
 
     def set_lights(self, positions, colors):
         if len(positions) != len(colors):
@@ -393,7 +404,7 @@ class Render:
 
     def _upload_lights(self):
         self.blocks_program["lightCount"].value = len(self.light_positions)
-        positions = np.zeros((16, 3), dtype="f4")
+        positions = np.zeros((16, 3), dtype="f8")
         colors = np.zeros((16, 4), dtype="f4")
         positions[:len(self.light_positions)] = self.light_positions
         colors[:len(self.light_colors)] = self.light_colors
@@ -447,7 +458,7 @@ class Render:
         # assets/models/block.obj), so the occupancy volume corner is
         # minimum - 0.5. The shaders compute cell = floor(pos - worldMin),
         # which then maps block P to texel P - minimum as stored above.
-        world_min_corner = minimum.xyz.astype("f4") - 0.5
+        world_min_corner = minimum.xyz.astype("f8") - 0.5
         self.blocks_program["blockOccupancy"] = 3
         self.blocks_program["worldMin"].value = tuple(map(float, world_min_corner))
         self.blocks_program["worldSize"].value = tuple(map(int, size))
@@ -523,7 +534,7 @@ class Render:
         else:
             all_arr = None
             minimum = Vec3(0, 0, 0)
-            size = np.ones(3, dtype="i4")
+            size = np.ones(3, dtype="i8")
 
         data = np.zeros((int(size[2]), int(size[1]), int(size[0])), dtype=np.uint8)
         if all_arr is not None and all_arr.shape[0]:
@@ -865,10 +876,10 @@ class InstancedModel:
         self.repeat_block_textures = bool(kwargs.get("repeat_block_textures"))
         self.program = kwargs["render"].blocks_program if not self.is_chunk_dummy else kwargs["render"].chunk_program
 
-        self.indices = kwargs["indices"]
+        self.indices = np.asarray(kwargs["indices"], dtype="i4")
         self.vertices = kwargs["vertices"]
 
-        self.vbo = self.ctx.buffer(self.vertices.tobytes())
+        self.vbo = self.ctx.buffer(np.asarray(self.vertices, dtype="f4").tobytes())
         self.ibo = self.ctx.buffer(self.indices.tobytes())
 
         self.instance_buffer = self.ctx.buffer(reserve=64 * 1024)
@@ -886,7 +897,7 @@ class InstancedModel:
                 ),
                 (
                     self.instance_buffer,
-                    '16f/i',
+                    '16f8/i',
                     'instance_model'
                 ),
                 (
@@ -898,21 +909,21 @@ class InstancedModel:
             self.ibo
         )
 
-        self.instances = np.zeros((0, 4, 4), dtype="f4")
-        self.tex_insta = np.zeros((0,), dtype="f4")
+        self.instances = np.zeros((0, 4, 4), dtype="f8")
+        self.tex_insta = np.zeros((0,), dtype="f8")
 
-        self.active_instances = np.zeros((0, 4, 4), dtype="f4")
-        self.active_tex_insta = np.zeros((0,), dtype="f4")
+        self.active_instances = np.zeros((0, 4, 4), dtype="f8")
+        self.active_tex_insta = np.zeros((0,), dtype="f8")
 
     def add_instances(self, positions:Sequence[Vec3 | Sequence[Number]] | np.ndarray, textures:list[int] | np.ndarray, rotations:list[list[Number]]=[], upload=True):
 
         if not isinstance(positions, np.ndarray):
-            positions = np.asarray(positions, dtype='f4')
+            positions = np.asarray(positions, dtype='f8')
 
         if positions.ndim == 1:
-            positions = positions.reshape(1, 3)
+            positions = positions.reshape(1, -1)
 
-        new_models = np.eye(4, dtype='f4').reshape(1, 4, 4)
+        new_models = np.eye(4, dtype='f8').reshape(1, 4, 4)
         new_models = np.repeat(new_models, len(positions), axis=0)
         new_models[:, 3, 0] = positions[:, 0]
         new_models[:, 3, 1] = positions[:, 1]
@@ -929,14 +940,14 @@ class InstancedModel:
 
         self.instances = np.concatenate((self.instances, new_models))
 
-        self.tex_insta = np.concatenate((self.tex_insta, np.array(textures, dtype="f4")))
+        self.tex_insta = np.concatenate((self.tex_insta, np.array(textures, dtype="f8")))
 
         # New instances are visible by default: mirror them into the
         # active (rendered) subset. self.instances/self.tex_insta stay
         # the full master list even when instances are hidden.
         self.active_instances = np.concatenate((self.active_instances, new_models))
 
-        self.active_tex_insta = np.concatenate((self.active_tex_insta, np.array(textures, dtype="f4")))
+        self.active_tex_insta = np.concatenate((self.active_tex_insta, np.array(textures, dtype="f8")))
 
         if upload:
             self._upload()
@@ -996,11 +1007,11 @@ class InstancedModel:
         self.layer_buffer.write(layer_bytes)
 
     def set_vertices(self, vertices):
-        vertices = np.asarray(vertices, dtype="f4").reshape(-1)
+        vertices = np.asarray(vertices, dtype="f8").reshape(-1)
         if vertices.size != self.vertices.size:
             raise ValueError("Animated mesh vertices must preserve the exported layout")
         self.vertices = vertices
-        self.vbo.write(vertices.tobytes())
+        self.vbo.write(vertices.astype("f4").tobytes())
 
     def set_visible(self, position_or_visible, value=None):
         """Per-instance visibility toggle plus whole-model show/hide.
@@ -1027,7 +1038,7 @@ class InstancedModel:
         position = position_or_visible
         visible = bool(value)
 
-        positions = np.asarray(position, dtype="f4")
+        positions = np.asarray(position, dtype="f8")
         if positions.ndim == 1:
             positions = positions.reshape(1, 3)
 
@@ -1050,10 +1061,10 @@ class InstancedModel:
                     to_add_tex.append(self.tex_insta[idx])
             if to_add_models:
                 self.active_instances = np.concatenate(
-                    (self.active_instances, np.stack(to_add_models).astype("f4"))
+                    (self.active_instances, np.stack(to_add_models).astype("f8"))
                 )
                 self.active_tex_insta = np.concatenate(
-                    (self.active_tex_insta, np.array(to_add_tex, dtype="f4"))
+                    (self.active_tex_insta, np.array(to_add_tex, dtype="f8"))
                 )
                 self._upload()
         else:
@@ -1171,8 +1182,6 @@ def do_thing2(x):
 
     return x
 
-#TODO rotate player based on position on sphere
-
 class Camera:
     def __init__(self, position, render: Render):
         self.render = render
@@ -1195,7 +1204,7 @@ class Camera:
         self.sensitivity = 0.2
         self.speed = 5
 
-        self.gravity = 1.8
+        self.gravity = 0.5
 
         self.fly = False
 
@@ -1203,7 +1212,7 @@ class Camera:
 
         self.max_jumps = 1
 
-        self.jump_strenght = 12
+        self.jump_strenght = 18
 
         self.jumps = 0
 
@@ -1244,6 +1253,8 @@ class Camera:
 
     def update(self, occupied, world=None):
 
+        point_to_world_center = Vec3(0, -1, 0)
+        world_up = Vec3(0, 1, 0)
         if world is not None:
             point_to_world_center = Vec3(*world.origin) - self.position
 
@@ -1251,11 +1262,6 @@ class Camera:
             if distance_to_world_center > 0:
                 point_to_world_center /= distance_to_world_center
                 world_up = -point_to_world_center
-            else:
-                world_up = Vec3(0, 1, 0)
-        else:
-            point_to_world_center = Vec3(0, 0, 0)
-            world_up = Vec3(0, 1, 0)
 
         yaw = math.radians(self.yaw)
         pitch = math.radians(self.pitch)
@@ -1292,7 +1298,6 @@ class Camera:
 
         move = Vec3(0.0, 0.0, 0.0)
 
-
         self.sprint = get_key(self.render.window, glfw.KEY_LEFT_CONTROL)
         self.fly = get_key(self.render.window, glfw.KEY_F)
 
@@ -1320,39 +1325,53 @@ class Camera:
             self.jumps = 0
             self.trust_me = True
 
-
-        self.vel_x *= 0.95
-        self.vel_y *= 0.95
-        self.vel_z *= 0.95
-
-        if world is not None:
-            distance_from_world_center = clip(distance(point_to_world_center, self.position) / (world.radius * 1.1), 1, -1)
-
-            self.vel_x += point_to_world_center[0] * self.gravity * do_thing2(distance_from_world_center)
-            self.vel_y += point_to_world_center[1] * self.gravity * do_thing2(distance_from_world_center)
-            self.vel_z += point_to_world_center[2] * self.gravity * do_thing2(distance_from_world_center)
+        physics_dt = max(self.render.dt, 0.0)
+        # Match the legacy damping/gravity at 60 FPS while integrating by elapsed time.
+        drag_rate = -60.0 * math.log(0.95)
+        decay = math.exp(-drag_rate * physics_dt)
+        gravity_acceleration = point_to_world_center * (
+            self.gravity * drag_rate / (1.0 - 0.95)
+        )
+        velocity = Vec3(self.vel_x, self.vel_y, self.vel_z)
+        velocity_decay = (1.0 - decay) / drag_rate
+        gravity_displacement = (
+            physics_dt / drag_rate
+            - (1.0 - decay) / (drag_rate * drag_rate)
+        )
+        displacement = (
+            velocity * velocity_decay
+            + gravity_acceleration * gravity_displacement
+        )
+        velocity = (
+            velocity * decay
+            + gravity_acceleration * velocity_decay
+        )
 
         if get_key(self.render.window, glfw.KEY_SPACE) and (self.on_ground or self.jumps < self.max_jumps) and self.trust_me:
-            self.vel_y = self.jump_strenght * -point_to_world_center[1]
-            self.vel_x = self.jump_strenght * -point_to_world_center[0]
-            self.vel_z = self.jump_strenght * -point_to_world_center[2]
+            velocity = world_up * self.jump_strenght
+            displacement = (
+                velocity * velocity_decay
+                + gravity_acceleration * gravity_displacement
+            )
+            velocity = (
+                velocity * decay
+                + gravity_acceleration * velocity_decay
+            )
+            self.vel_x, self.vel_y, self.vel_z = velocity
             self.jumps += 1
             self.trust_me = False
+        else:
+            self.vel_x, self.vel_y, self.vel_z = velocity
 
         if get_key(self.render.window, glfw.KEY_SPACE) != glfw.PRESS: self.trust_me = True
 
-        dx = self.vel_x * self.render.dt
-        dy = self.vel_y * self.render.dt
-        dz = self.vel_z * self.render.dt
-
         if self.fly:
-            dy = 0
-            dx, dz = 0, 0
+            displacement = Vec3(0.0, 0.0, 0.0)
             self.vel_x = 0
             self.vel_y = 0
             self.vel_z = 0
 
-        move += [dx, dy, dz]
+        move += displacement
 
         prev_pos = self.position.copy()
 
@@ -1454,7 +1473,7 @@ def load_obj(file_path:str):
                 for i in range(1, len(face)-1):
                     indices.extend([face[0], face[i], face[i+1]])
 
-    return [np.array(vertices, dtype='f4'), np.array(indices, dtype='i4')]
+    return [np.array(vertices, dtype='f8'), np.array(indices, dtype='i4')]
 
 CUBE_MODEL_INFO = load_obj("assets/models/block.obj")
 
@@ -1486,7 +1505,7 @@ class InstancedText:
             0.0, 1.0, 1.0,         -1.0, 0.0, 0.0,   1.0, 1.0,
             0.0, 0.0, 1.0,         -1.0, 0.0, 0.0,   1.0, 0.0,
             0.0, 0.0, 0.0,         -1.0, 0.0, 0.0,   0.0, 0.0,
-        ], dtype="f4")
+        ], dtype="f8")
 
 
 
@@ -1497,7 +1516,7 @@ class InstancedText:
         ], dtype="i4")
 
 
-        self.vbo = self.ctx.buffer(self.vertices.tobytes())
+        self.vbo = self.ctx.buffer(np.asarray(self.vertices, dtype="f4").tobytes())
         self.ibo = self.ctx.buffer(self.indices.tobytes())
 
         self.instance_buffer = self.ctx.buffer(reserve=64 * 1024)
@@ -1515,7 +1534,7 @@ class InstancedText:
                 ),
                 (
                     self.instance_buffer,
-                    '16f/i',
+                    '16f8/i',
                     'instance_model'
                 ),
                 (
@@ -1527,8 +1546,8 @@ class InstancedText:
             self.ibo
         )
 
-        self.instances = np.zeros((0, 4, 4), dtype="f4")
-        self.tex_insta = np.zeros((0,), dtype="f4")
+        self.instances = np.zeros((0, 4, 4), dtype="f8")
+        self.tex_insta = np.zeros((0,), dtype="f8")
 
         self.texts = {}
         self._text_entries = []
@@ -1562,15 +1581,15 @@ class InstancedText:
                     ya_know += 1
                     continue
 
-                model = np.eye(4, dtype="f4")
+                model = np.eye(4, dtype="f8")
                 model[3, 0] = position[0]
                 model[3, 1] = position[1]
                 model[3, 2] = position[2] + center_offset + character_index - ya_know
                 instances.append(model)
                 textures.append(tex)
 
-        self.instances = np.asarray(instances, dtype="f4").reshape((-1, 4, 4))
-        self.tex_insta = np.asarray(textures, dtype="f4")
+        self.instances = np.asarray(instances, dtype="f8").reshape((-1, 4, 4))
+        self.tex_insta = np.asarray(textures, dtype="f8")
         self._upload_text_instances()
 
     @staticmethod
@@ -1649,120 +1668,150 @@ class InstancedText:
 
 
 class Collectible:
+    _VERTEX_SHADER = """
+        #version 330
+        in vec2 in_position;
+        in vec2 in_uv;
+        in vec2 instance_position;
+        in float instance_layer;
+
+        uniform vec2 screen_size;
+        uniform float TEXTURE_W;
+        uniform float TEXTURE_H;
+        uniform float ATLAS_W;
+        uniform float ATLAS_H;
+
+        out vec2 v_uv;
+
+        void main() {
+            vec2 pixel_position = instance_position + in_position * vec2(TEXTURE_W, TEXTURE_H);
+            vec2 clip_position = vec2(
+                pixel_position.x / screen_size.x * 2.0 - 1.0,
+                1.0 - pixel_position.y / screen_size.y * 2.0
+            );
+            gl_Position = vec4(clip_position, 0.0, 1.0);
+
+            float columns = max(floor(ATLAS_W / TEXTURE_W), 1.0);
+            float rows = max(floor(ATLAS_H / TEXTURE_H), 1.0);
+            float column = mod(instance_layer, columns);
+            float row = floor(instance_layer / columns);
+            vec2 tile_size = vec2(TEXTURE_W / ATLAS_W, TEXTURE_H / ATLAS_H);
+            vec2 half_texel = 0.5 / vec2(TEXTURE_W, TEXTURE_H);
+            vec2 local_uv = clamp(
+                vec2(in_uv.x, 1.0 - in_uv.y),
+                half_texel,
+                vec2(1.0) - half_texel
+            );
+            v_uv = (vec2(column, row) + local_uv) * tile_size;
+        }
+    """
+    _FRAGMENT_SHADER = """
+        #version 330
+        in vec2 v_uv;
+        uniform sampler2DArray atlasArray;
+        out vec4 fragColor;
+
+        void main() {
+            vec4 texel = texture(atlasArray, vec3(v_uv, 0.0));
+            if (texel.a < 0.1)
+                discard;
+            fragColor = texel;
+        }
+    """
+
     def __init__(self, render):
-        """
-        args:
-            render: Render instance
-        """
-        #quad facing X-
-        self.vertices = np.array([
-            # position              # normal          # uv
-            0.0, 0.0, 0.0,         -1.0, 0.0, 0.0,   0.0, 0.0,
-            0.0, 1.0, 0.0,         -1.0, 0.0, 0.0,   0.0, 1.0,
-            0.0, 1.0, 1.0,         -1.0, 0.0, 0.0,   1.0, 1.0,
-
-            0.0, 1.0, 1.0,         -1.0, 0.0, 0.0,   1.0, 1.0,
-            0.0, 0.0, 1.0,         -1.0, 0.0, 0.0,   1.0, 0.0,
-            0.0, 0.0, 0.0,         -1.0, 0.0, 0.0,   0.0, 0.0,
-        ], dtype="f4")
-
-        self.indices = np.array([
-            0, 1, 2,
-
-            3, 4, 5
-        ], dtype="i4")
-
-        self.program = render.item_program
-        self.ctx = render.ctx
-
-        self.vbo = self.ctx.buffer(self.vertices.tobytes())
-        self.ibo = self.ctx.buffer(self.indices.tobytes())
-
-        self.instance_buffer = self.ctx.buffer(reserve=64 * 1024)
-        self.layer_buffer = self.ctx.buffer(reserve=4 * 1024)
-
         self.render_ = render
+        self.ctx = render.ctx
+        self.program = self.ctx.program(
+            vertex_shader=self._VERTEX_SHADER,
+            fragment_shader=self._FRAGMENT_SHADER,
+        )
+        self.program["atlasArray"].value = 2
+        self.program["TEXTURE_W"].value = ITEM_W
+        self.program["TEXTURE_H"].value = ITEM_H
+        self.program["ATLAS_W"].value = ITEMS_W
+        self.program["ATLAS_H"].value = ITEMS_H
 
+        vertices = np.array([
+            0, 0, 0, 0,
+            0, 1, 0, 1,
+            1, 1, 1, 1,
+            1, 1, 1, 1,
+            1, 0, 1, 0,
+            0, 0, 0, 0,
+        ], dtype="f8")
+        self.vbo = self.ctx.buffer(np.asarray(vertices, dtype="f4").tobytes())
+        self.instance_buffer = self.ctx.buffer(reserve=3 * 4)
         self.vao = self.ctx.vertex_array(
             self.program,
             [
-                (
-                    self.vbo,
-                    '3f 3f 2f',
-                    'in_position',
-                    'in_normal',
-                    'in_uv'
-                ),
-                (
-                    self.instance_buffer,
-                    '16f/i',
-                    'instance_model'
-                ),
-                (
-                    self.layer_buffer,
-                    '1i/i',
-                    'instance_layer'
-                ),
+                (self.vbo, "2f 2f", "in_position", "in_uv"),
+                (self.instance_buffer, "2f 1f/i", "instance_position", "instance_layer"),
             ],
-            self.ibo
         )
+        self.instances = np.zeros((0, 4, 4), dtype="f8")
+        self.tex_insta = np.zeros((0,), dtype="f8")
 
-        self.instances = np.zeros((0, 4, 4), dtype="f4")
-        self.tex_insta = np.zeros((0,), dtype="f4")
-        self.callbacks = []
+    def _upload(self):
+        instance_data = np.column_stack(
+            (self.instances[:, 3, :2], self.tex_insta)
+        ).astype("f4", copy=False)
+        self.instance_buffer.orphan(max(instance_data.nbytes, 1))
+        if instance_data.size:
+            self.instance_buffer.write(instance_data.tobytes())
 
-    def add_collectibles(self, positions:list[Vec3], textures:list[int], on_collect:list[callable]):
-        self.callbacks.extend(on_collect)
-        
-        if not isinstance(positions, np.ndarray):
-            positions = np.asarray(positions, dtype='f4')
-
+    def add_collectibles(
+        self,
+        positions: list[Vec3],
+        textures: list[int],
+    ):
+        positions = np.asarray(positions, dtype="f8")
         if positions.ndim == 1:
-            positions = positions.reshape(1, 3)
+            positions = positions.reshape(1, -1)
+        if positions.ndim != 2 or positions.shape[1] < 2:
+            raise ValueError("collectible positions must contain x and y coordinates")
+        if len(positions) != len(textures):
+            raise ValueError("positions and textures must have the same length")
 
-        new_models = np.eye(4, dtype='f4').reshape(1, 4, 4)
-        new_models = np.repeat(new_models, len(positions), axis=0)
+        new_models = np.repeat(
+            np.eye(4, dtype="f8").reshape(1, 4, 4),
+            len(positions),
+            axis=0,
+        )
         new_models[:, 3, 0] = positions[:, 0]
         new_models[:, 3, 1] = positions[:, 1]
-        new_models[:, 3, 2] = positions[:, 2]
-
         self.instances = np.concatenate((self.instances, new_models))
+        self.tex_insta = np.concatenate(
+            (self.tex_insta, np.asarray(textures, dtype="f8"))
+        )
+        self._upload()
+    
+    def remove_all(self):
 
-        self.tex_insta = np.concatenate((self.tex_insta, np.array(textures, dtype="f4")))
+        del self.instances
+        del self.tex_insta
 
-        self.instance_buffer.orphan(len(self.instances.tobytes()))
-        self.instance_buffer.write(self.instances.tobytes())
+        self.instances = np.zeros((0, 4, 4), dtype="f8")
+        self.tex_insta = np.zeros((0,), dtype="f8")
 
-        layer_bytes = self.tex_insta.astype('i4').tobytes()
-        self.layer_buffer.orphan(len(layer_bytes))
-        self.layer_buffer.write(layer_bytes)
-
-    def update(self, player_position:Vec3):
-        for i, instance in enumerate(self.instances):
-            a = Vec3(*instance[3][:3])
-
-            if distance(a, player_position) < 3:
-                self.instances = np.delete(self.instances, i, axis=0)
-                self.tex_insta = np.delete(self.tex_insta, i, axis=0)
-                self.callbacks[i](self.render_)
-                continue
-
-            x = Matrix44.from_x_rotation(self.render_.dt)
-            y = Matrix44.from_y_rotation(self.render_.dt)
-            z = Matrix44.from_z_rotation(self.render_.dt)
-
-            self.instances[i] = (x @ y @ z @ instance).astype("f4")
-
-        self.instance_buffer.orphan(len(self.instances.tobytes()))
-        self.instance_buffer.write(self.instances.tobytes())
-
-        layer_bytes = self.tex_insta.astype('i4').tobytes()
-        self.layer_buffer.orphan(len(layer_bytes))
-        self.layer_buffer.write(layer_bytes)
+        self._upload()
 
     def render(self):
-        if len(self.instances) == 0: return
-        self.vao.render(instances=len(self.instances))
+        if len(self.instances) == 0:
+            return
+        screen_width, screen_height = self.render_.get_window_size()
+        if screen_width <= 0 or screen_height <= 0:
+            return
+        self.program["screen_size"].value = (screen_width, screen_height)
+        self.render_.items_texture.use(location=2)
+        self.ctx.disable(moderngl.DEPTH_TEST)
+        try:
+            self.vao.render(instances=len(self.instances))
+        except Exception as e:
+            print("rror while rendering blok items!!!!!!!")
+            print(e)
+
+        self.ctx.enable(moderngl.DEPTH_TEST)
 
 class HUDText(InstancedText):
     def __init__(self, **kwargs):
@@ -1863,6 +1912,106 @@ class HUDText(InstancedText):
             self.ctx.enable(moderngl.DEPTH_TEST)
 
 
+class INVSCR:
+    _VERTEX_SHADER = """
+        #version 330
+        in vec2 in_position;
+        in vec2 in_uv;
+
+        uniform vec2 screen_size;
+        uniform vec2 position;
+        uniform vec2 size;
+
+        out vec2 texture_uv;
+
+        void main() {
+            vec2 pixel_position = position + in_position * size;
+            vec2 clip_position = vec2(
+                pixel_position.x / screen_size.x * 2.0 - 1.0,
+                1.0 - pixel_position.y / screen_size.y * 2.0
+            );
+            gl_Position = vec4(clip_position, 0.0, 1.0);
+            texture_uv = in_uv;
+        }
+    """
+    _FRAGMENT_SHADER = """
+        #version 330
+        in vec2 texture_uv;
+        uniform sampler2D inventory_texture;
+        out vec4 frag_color;
+
+        void main() {
+            frag_color = texture(inventory_texture, texture_uv);
+        }
+    """
+
+    def __init__(
+        self,
+        render: Render,
+        width=INVSCR_W,
+        height=INVSCR_H,
+        bottom=0,
+        scale=1.0,
+    ):
+        if width <= 0 or height <= 0:
+            raise ValueError("inventory scroll width and height must be positive")
+        if bottom < 0:
+            raise ValueError("inventory scroll bottom offset cannot be negative")
+        if scale <= 0:
+            raise ValueError("inventory scroll scale must be positive")
+
+        self.render_context = render
+        self.ctx = render.ctx
+        self.scale = float(scale)
+        self.width = float(width) * self.scale
+        self.height = float(height) * self.scale
+        self.bottom = float(bottom)
+
+        image = INVSCR_IMAGE.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
+        self.texture = self.ctx.texture(image.size, 4, image.tobytes())
+        self.texture.filter = (moderngl.NEAREST, moderngl.NEAREST)
+
+        self.program = self.ctx.program(
+            vertex_shader=self._VERTEX_SHADER,
+            fragment_shader=self._FRAGMENT_SHADER,
+        )
+        self.program["inventory_texture"].value = 4
+
+        # Winding is counter-clockwise after the pixel-to-clip Y flip.
+        vertices = np.array([
+            0, 0, 0, 1,
+            0, 1, 0, 0,
+            1, 1, 1, 0,
+            0, 0, 0, 1,
+            1, 1, 1, 0,
+            1, 0, 1, 1,
+        ], dtype="f4")
+        self.vertex_buffer = self.ctx.buffer(vertices.tobytes())
+        self.vao = self.ctx.vertex_array(
+            self.program,
+            [(self.vertex_buffer, "2f 2f", "in_position", "in_uv")],
+        )
+
+    def render(self):
+        screen_width, screen_height = self.render_context.get_window_size()
+        if screen_width <= 0 or screen_height <= 0:
+            return
+
+        self.program["screen_size"].value = (screen_width, screen_height)
+        self.program["size"].value = (self.width, self.height)
+        self.program["position"].value = (
+            (screen_width - self.width) / 2,
+            screen_height - self.bottom - self.height,
+        )
+
+        self.texture.use(location=4)
+        self.ctx.disable(moderngl.DEPTH_TEST)
+        try:
+            self.vao.render()
+        finally:
+            self.ctx.enable(moderngl.DEPTH_TEST)
+
+
 if __name__ == "__main__":
     def init(render:Render):
         GRASS = 0
@@ -1873,7 +2022,7 @@ if __name__ == "__main__":
 
         FOV = 60
         
-        PROJECTION = np.array(Matrix44.perspective_projection(FOV, WIDTH/HEIGHT, 0.1, 1000), dtype='f4')
+        PROJECTION = np.array(Matrix44.perspective_projection(FOV, WIDTH/HEIGHT, 0.1, 1000), dtype='f8')
 
 
         render.blocks_program["atlasArray"] = 0
@@ -1914,12 +2063,12 @@ if __name__ == "__main__":
         render.ctx.clear(0, 0, 0)
         render.camera.update(set())
 
-        render.blocks_program["view"].write(render.camera.view.astype("f4").tobytes())
-        render.blocks_program["viewPos"].write(render.camera.position.xyz.astype('f4').tobytes())
+        render.blocks_program["view"].write(render.camera.view.astype("f8").tobytes())
+        render.blocks_program["viewPos"].write(render.camera.position.xyz.astype('f8').tobytes())
 
-        render.text_program["view"].write(render.camera.view.astype("f4").tobytes())
+        render.text_program["view"].write(render.camera.view.astype("f8").tobytes())
         render.text_program["lightPos"].value = (0, 0, 0)
-        render.text_program["viewPos"].write(render.camera.position.xyz.astype('f4').tobytes())
+        render.text_program["viewPos"].write(render.camera.position.xyz.astype('f8').tobytes())
 
 
         render.MODEL.render()

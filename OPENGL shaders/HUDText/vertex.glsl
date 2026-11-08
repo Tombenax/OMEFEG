@@ -1,9 +1,9 @@
-#version 330
+#version 410
 
 in vec3 in_position;
 in vec3 in_normal;
 in vec2 in_uv;
-in mat4 instance_model;
+in dmat4 instance_model;
 in int instance_layer;
 
 uniform vec2 screenSize;
@@ -28,8 +28,8 @@ void main() {
 	v_uv = vec2(column, row) * tileSize + vec2(in_uv.x, 1.0 - in_uv.y) * tileSize;
 
 	vec2 pixelPosition = vec2(
-		instance_model[3].x + instance_model[3].z * TEXTURE_W + in_position.z * TEXTURE_W,
-		instance_model[3].y + in_position.y * TEXTURE_H
+		float(instance_model[3].x + instance_model[3].z * double(TEXTURE_W) + double(in_position.z) * double(TEXTURE_W)),
+		float(instance_model[3].y + double(in_position.y) * double(TEXTURE_H))
 	);
 
 	vec2 clipPosition = vec2(
@@ -37,5 +37,5 @@ void main() {
 		1.0 - pixelPosition.y / screenSize.y * 2.0
 	);
 
-	gl_Position = vec4(clipPosition, in_normal.x * 0.000001, 1.0);
+	gl_Position = vec4(clipPosition, float(double(in_normal.x) * double(0.000001)), 1.0);
 }

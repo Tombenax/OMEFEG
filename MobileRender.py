@@ -441,95 +441,6 @@ def convert_dummy_uv(uv, tiles_y):
     return out
 
 
-def merge_instances(base_vertices, base_indices, matrices, layers,
-                    tile_w, tile_h, atlas_w, atlas_h,
-                    pre_mapped_uv=False):
-    """Merge per-instance base geometry into one world-space mesh.
-
-    * ``base_vertices``: ``(V, 8)`` float array (pos, normal, uv).
-    * ``base_indices``: ``(I,)`` int array.
-    * ``matrices``: ``(N, 4, 4)`` array, row-vector convention
-      (``world = [x, y, z, 1] @ M``) -- the exact convention the
-      desktop ``add_instances`` builds.
-    * ``layers``: texture tile index per instance.
-    * when ``pre_mapped_uv`` is True (chunk dummy meshes coming from
-      ``export_and_load_chunk``) UVs are already final atlas UVs and
-      are passed through untouched, not re-mapped per layer.
-
-    Tile *selection* matches the desktop shaders
-    (``column = layer % columns``, ``row = layer // columns`` counted
-    from the top of the atlas), but the row is stored from the BOTTOM
-    because the mobile texture is the PNG as-is (upright 2D texture,
-    v = 1 at the top) while the desktop samples a vertically
-    strip-flipped texture array::
-
-        uv = ((column + u) / TX, (tiles_y - 1 - row + v) / TY)
-
-    (``block.obj`` UVs are pre-mapped atlas regions, so they plug into
-    this formula directly.)
-
-    Returns ``(vertices (M, 8) float32, indices (K,) int32)``.
-    """
-    base_vertices = np.asarray(base_vertices, dtype=np.float32).reshape(-1, 8)
-    base_indices = np.asarray(base_indices, dtype=np.int32).reshape(-1)
-    matrices = np.asarray(matrices, dtype=np.float32).reshape(-1, 4, 4)
-    layers = np.asarray(layers).reshape(-1)
-
-    count = int(matrices.shape[0])
-    if count == 0 or base_vertices.shape[0] == 0:
-        return np.zeros((0, 8), dtype=np.float32), np.zeros((0,), dtype=np.int32)
-
-    v_count = base_vertices.shape[0]
-    base_pos = base_vertices[:, 0:3]
-    base_nor = base_vertices[:, 3:6]
-    base_uv = base_vertices[:, 6:8]
-
-    merged_pos = np.empty((count * v_count, 3), dtype=np.float32)
-    merged_nor = np.empty((count * v_count, 3), dtype=np.float32)
-    merged_uv = np.empty((count * v_count, 2), dtype=np.float32)
-
-    for i in range(count):
-        m = matrices[i].astype(np.float64)
-        # positions: row-vector transform
-        rotated = base_pos.astype(np.float64) @ m[:3, :3].T + m[3, :3]
-        merged_pos[i * v_count:(i + 1) * v_count] = rotated.astype(np.float32)
-        # normals: n' = n @ inv(M^T)  (row-vector form of the desktop
-        # normal matrix transpose(inverse(M)))
-        try:
-            inv_mt = np.linalg.inv(m.T)
-            n_mat = inv_mt[:3, :3]
-            if not np.all(np.isfinite(n_mat)):
-                raise np.linalg.LinAlgError
-            tn = base_nor.astype(np.float64) @ n_mat
-        except np.linalg.LinAlgError:
-            tn = base_nor.astype(np.float64)
-        lens = np.linalg.norm(tn, axis=1, keepdims=True)
-        lens[lens == 0.0] = 1.0
-        merged_nor[i * v_count:(i + 1) * v_count] = (tn / lens).astype(np.float32)
-        # uvs
-        if pre_mapped_uv:
-            merged_uv[i * v_count:(i + 1) * v_count] = base_uv
-        else:
-            layer = int(layers[i]) if i < layers.shape[0] else 0
-            columns = max(int(atlas_w // tile_w), 1)
-            tiles_y = max(int(atlas_h // tile_h), 1)
-            layer = layer % (columns * tiles_y)
-            column = layer % columns
-            row_bottom = tiles_y - 1 - (layer // columns)
-            merged_uv[i * v_count:(i + 1) * v_count, 0] = (
-                (column + base_uv[:, 0]) * tile_w / atlas_w
-            )
-            merged_uv[i * v_count:(i + 1) * v_count, 1] = (
-                (row_bottom + base_uv[:, 1]) * tile_h / atlas_h
-            )
-
-    merged = np.concatenate([merged_pos, merged_nor, merged_uv], axis=1)
-    offsets = (np.arange(count, dtype=np.int32) * v_count)[:, None]
-    merged_indices = (base_indices[None, :] + offsets).reshape(-1)
-
-    return merged.astype(np.float32), merged_indices.astype(np.int32)
-
-
 # ---------------------------------------------------------------------------
 # Compatibility proxies (the desktop exposes moderngl program / context
 # objects; nothing in the game drives them directly, but keep the same
@@ -875,20 +786,8 @@ class InstancedModel:
     # -- CPU merge ----------------------------------------------------------
 
     def _rebuild(self):
-        tile_w, tile_h, atlas_w, atlas_h = _ATLASES[self._atlas]
-        verts, inds = merge_instances(
-            self.vertices,
-            self.indices,
-            self.active_instances,
-            self.active_tex_insta,
-            tile_w,
-            tile_h,
-            atlas_w,
-            atlas_h,
-            pre_mapped_uv=self._is_dummy,
-        )
-        self.vertices_all = verts
-        self.indices_all = inds
+        self.vertices_all = np.zeros((0, 8), dtype=np.float32)
+        self.indices_all = np.zeros((0,), dtype=np.int32)
         self._dirty = True
 
     def _upload(self):

@@ -62,8 +62,6 @@ class Player:
             if len(self.inventory_list) > 0:
                 #switch chest slot and item
 
-                self.invitems.remove_all()
-
                 #check if an item is in chest slot
                 if self.chest_slot is not None:
                     #there is an item in the chest slot
@@ -72,12 +70,12 @@ class Player:
 
                     self.inventory_list[self.selected] = self.chest_slot
 
+                    self.inventory.pop(prev_thing)
+
+                    self.inventory[self.chest_slot] = 1
+
+
                     self.chest_slot = prev_thing
-
-                    replacement = {self.inventory_list[self.selected]: self.chest_slot}
-
-                    for k, v in list(self.inventory.items()):
-                        self.inventory[replacement.get(k, k)] = self.inventory.pop(k)
 
                 
                 else:
@@ -95,13 +93,13 @@ class Player:
 
                 if self.chest_slot == BACKPACK:
                     self.inventory_slots = 12
+                else:
+                    self.inventory_slots = 2
 
 
         if self.render.get_key(self.render.KEY_RIGHT_ARROW) and self.change_selected_cooldown.is_active:
 
             self.selected = min(len(self.inventory)-1, self.selected + 1)
-
-            self.invitems.remove_all()
 
             self.rebuild_inv()
 
@@ -110,25 +108,32 @@ class Player:
 
             self.selected = max(0, self.selected - 1)
 
-            self.invitems.remove_all()
-
             self.rebuild_inv()
 
         if self.render.get_key(self.render.KEY_LEFT_SHIFT) and self.change_selected_cooldown.is_active:
             if len(self.inventory) > 0:
-                self.invitems.remove_all()
 
-                self.inventory.pop(self.inventory_list[self.selected])
+                popped = self.inventory_list.pop(self.selected)
 
-                self.inventory_list.pop(self.selected)
+                self.inventory.pop(popped)
 
                 self.selected = clip(self.selected, len(self.inventory)-1, 0) #clip it so it doesn't go out of bounds
 
                 self.rebuild_inv()
 
+                return popped
+
+        if not sp.is_playing(0):
+            sp.stop()
+
     def rebuild_inv(self):
-        for idx, item in enumerate(self.inventory):
+
+        self.invitems.remove_all()
+
+        for idx, item in enumerate(self.inventory_list):
             self.invitems.add_collectibles([Vec3((WIDTH/2-16) + 50*idx - 50*self.selected, HEIGHT - 40.5, 0)], [item])
+
+        if self.chest_slot is not None: self.invitems.add_collectibles([Vec3(0, (HEIGHT - 40) / 2, 0)], [self.chest_slot])
 
 
     def get_selcted_block(self):

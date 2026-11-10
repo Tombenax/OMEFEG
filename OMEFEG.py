@@ -311,7 +311,7 @@ PLAYER = None
 NPCS = None
 
 def init(render):
-    global TEXT, coll, WORLD, RENDER_DISTANCE, NETWORK, PLAYERS, min_x, max_x, min_y, max_y, hud, SLECTED, menus, selected, MULTIPLAYER, LOAD_WORLD, PLAYER, NPCS, TEST_ENTITY, ITEMS, coldbar
+    global TEXT, coll, WORLD, RENDER_DISTANCE, NETWORK, PLAYERS, min_x, max_x, min_y, max_y, hud, SLECTED, menus, selected, MULTIPLAYER, LOAD_WORLD, PLAYER, NPCS, TEST_ENTITY, ITEMS, coldbar, body_slots
 
     PLAYER = Player(render)
 
@@ -327,9 +327,11 @@ def init(render):
 
     ITEMS = Items3D(render)
 
-    coldbar = INVSCR(render, scale=2.5)
+    coldbar = INVSCR(render, scale=2.5, pos_x="center", pos_y="bottom")
 
-    ITEMS.add_item(Vec3(10, 1001, 0), "assets/models/Backpack.obj", BACKPACK)
+    body_slots = INVSCR(render, width=BODY_SLOTS_W, height=BODY_SLOTS_H, scale=2.5, image_=BODY_SLOTS, tex_thing=5, pos_x="left", pos_y="center")
+
+    ITEMS.add_item(Vec3(5, 1_000_001, 0), "assets/models/Backpack.obj", BACKPACK)
 
     menus.load_template("mainscreen", "assets/layouts/main_screen.json", {"load_world": lambda: set_variable("load_world"), "erase_world": lambda: set_variable("erase_world"), "multiplayer": lambda: set_variable("multiplayer")})
     menus.activate("mainscreen")
@@ -468,7 +470,7 @@ def init(render):
 
     TEST_ENTITY = Entitys(render)
 
-    BS = BehaviurScript({ # not bulls**t
+    BS = BehaviurScript({ # not b***s**t
         "init":[
         ],
 
@@ -570,7 +572,7 @@ def init(render):
     SLECTED = Model(render)
     v, i = load_obj("assets/models/block.obj")
     SLECTED.add_model("selected", vertices=v, indices=i)
-    SLECTED.add_instances([Vec3(0, 0, 0)], [12], "selected")
+    SLECTED.add_instances([Vec3(0, 0, 0)], [SELECTED], "selected")
 
     pos = WORLD.get_block_y_at(PLAYER.pos[0]+5, PLAYER.pos[2])
     pos += 1
@@ -1014,7 +1016,7 @@ def update(render:Render):
     global pressed,blocks_placed, blocks_broken
     global pause, start_pos, MULTIPLAYER
     global LOAD_WORLD, sound_player, last_asked
-    global TEST_ENTITY, ITEMS, coldbar
+    global TEST_ENTITY, ITEMS, coldbar, body_slots
 
     last_asked += 1
 
@@ -1063,7 +1065,9 @@ def update(render:Render):
         for x, z in square_range_3_layers(camera_chunk_pos, 10):
             WORLD.generate_chunk(x, camera_chunk_pos.y, z)
 
-    PLAYER.update(WORLD)
+    if a := PLAYER.update(WORLD):
+        ITEMS.add_item(PLAYER.pos + Vec3(2, 0.5, 0), "assets/models/backpack.obj" if a == BACKPACK else "assets/models/block.obj", a)
+
     block_placed = None
 
     if result := raycast(WORLD.get_neighbours_extened_in_circle(PLAYER.pos, 10), render.CAMERA.eye_pos, render.CAMERA.front): #eye_pos bc ray starts from eyes
@@ -1129,6 +1133,8 @@ def update(render:Render):
     TEXT.render()
 
     coldbar.render()
+
+    body_slots.render()
 
     PLAYER.render_2D_stuff()
 

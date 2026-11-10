@@ -557,145 +557,6 @@ _FACE_OFFSETS = ((0, 0, -1), (1, 0, 0), (0, 0, 1), (-1, 0, 0), (0, 1, 0), (0, -1
 _WATER_TEX = 10
 
 
-def greedy_mesh_blocks(
-    region_blocks: dict[tuple[int, int, int], int],
-    occupied: dict[tuple[int, int, int], int],
-    textures_x: int,
-    textures_y: int,
-    cube_vertices=None,
-    mesh_region_key=None,
-    region_size: int = 16,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Build a greedy, face-culled mesh for one region of axis-aligned blocks."""
-    face_specs = (
-        ((0, 0, -1), 2, -1, 1, 0),
-        ((1, 0, 0), 0, 1, 1, 2),
-        ((0, 0, 1), 2, 1, 0, 1),
-        ((-1, 0, 0), 0, -1, 2, 1),
-        ((0, 1, 0), 1, 1, 2, 0),
-        ((0, -1, 0), 1, -1, 0, 2),
-    )
-    masks: dict[tuple[int, int, int], dict[tuple[int, int], None]] = {}
-    base_faces = None
-    if cube_vertices is not None:
-        base_faces = np.asarray(cube_vertices, dtype=np.float32).reshape(6, 4, 8)
-    for position, texture in region_blocks.items():
-        x, y, z = position
-        for face, (offset, normal_axis, _sign, u_axis, v_axis) in enumerate(face_specs):
-            if (
-                mesh_region_key is not None
-                and position[normal_axis] // region_size != mesh_region_key[normal_axis]
-            ):
-                continue
-            neighbor = (x + offset[0], y + offset[1], z + offset[2])
-            neighbor_texture = occupied.get(neighbor)
-            if neighbor_texture is not None and not (
-                neighbor_texture == _WATER_TEX and texture != _WATER_TEX
-            ):
-                continue
-            if mesh_region_key is not None:
-                # The prior region owns the first connected face cells across a seam.
-                owner = list(position[axis] // region_size for axis in range(3))
-                candidates = [tuple(owner)]
-                boundary_axes = [
-                    axis for axis in (u_axis, v_axis)
-                    if position[axis] % region_size == 0
-                ]
-                for subset in range(1, 1 << len(boundary_axes)):
-                    previous = list(position)
-                    previous_region = owner.copy()
-                    for bit, tangent_axis in enumerate(boundary_axes):
-                        if subset & (1 << bit):
-                            previous[tangent_axis] -= 1
-                            previous_region[tangent_axis] -= 1
-                    if occupied.get(tuple(previous)) != texture:
-                        continue
-                    previous_neighbor = tuple(
-                        previous[axis] + offset[axis] for axis in range(3)
-                    )
-                    previous_neighbor_texture = occupied.get(previous_neighbor)
-                    if previous_neighbor_texture is not None and not (
-                        previous_neighbor_texture == _WATER_TEX
-                        and texture != _WATER_TEX
-                    ):
-                        continue
-                    candidates.append(tuple(previous_region))
-                if min(candidates) != mesh_region_key:
-                    continue
-            mask_key = (face, position[normal_axis], texture)
-            masks.setdefault(mask_key, {})[(position[u_axis], position[v_axis])] = None
-
-    vertices: list[tuple[float, ...]] = []
-    indices: list[int] = []
-    texture_columns = max(int(textures_x), 1)
-    texture_rows = max(int(textures_y), 1)
-    for (face, plane, texture), cells in masks.items():
-        _offset, normal_axis, sign, u_axis, v_axis = face_specs[face]
-        face_uv = None
-        if base_faces is not None:
-            face_uv = {}
-            for vertex in base_faces[face]:
-                corner = (
-                    int(round(float(vertex[u_axis]) * 2)),
-                    int(round(float(vertex[v_axis]) * 2)),
-                )
-                face_uv[corner] = vertex[6:8]
-        rows: dict[int, set[int]] = {}
-        for u, v in cells:
-            rows.setdefault(v, set()).add(u)
-
-        for v0 in sorted(rows):
-            row = rows[v0]
-            for u0 in sorted(row):
-                if u0 not in row:
-                    continue
-                width = 1
-                while u0 + width in row:
-                    width += 1
-                height = 1
-                while v0 + height in rows and all(
-                    u0 + dx in rows[v0 + height] for dx in range(width)
-                ):
-                    height += 1
-                for dy in range(height):
-                    for dx in range(width):
-                        rows[v0 + dy].remove(u0 + dx)
-
-                corners = []
-                for du, dv in ((0, 0), (width, 0), (width, height), (0, height)):
-                    point = [0.0, 0.0, 0.0]
-                    point[normal_axis] = plane + sign * 0.5
-                    point[u_axis] = u0 - 0.5 + du
-                    point[v_axis] = v0 - 0.5 + dv
-                    corners.append(point)
-
-                column = texture % texture_columns
-                texture_row = texture // texture_columns
-                uv_corners = (
-                    face_uv[(-1, -1)] if face_uv is not None else (0.0, 0.0),
-                    face_uv[(1, -1)] if face_uv is not None else (1.0, 0.0),
-                    face_uv[(1, 1)] if face_uv is not None else (1.0, 1.0),
-                    face_uv[(-1, 1)] if face_uv is not None else (0.0, 1.0),
-                )
-                base_index = len(vertices)
-                for point, (u, v) in zip(corners, uv_corners):
-                    vertices.append((
-                        point[0], point[1], point[2],
-                        *face_specs[face][0],
-                        (column + u) / texture_columns,
-                        (texture_row + v) / texture_rows,
-                    ))
-                indices.extend((
-                    base_index, base_index + 1, base_index + 2,
-                    base_index, base_index + 2, base_index + 3,
-                ))
-
-    return (
-        np.asarray(vertices, dtype=np.float32).reshape(-1, 8),
-        np.asarray(indices, dtype=np.int32),
-    )
-
-
 def export_and_load_chunk(models: list[list[int | float]], _layers_, CUBE_MODEL_INFO, TEXTURES_X, TEXTURES_Y):
     """
     Face-culled chunk mesh builder.
@@ -904,6 +765,7 @@ _BLOCK_CTOR_BY_NAME: dict[str, type] = {
     "cobblestone": Cobblestone,
     "oak_planks": Oak_Planks,
     "unbrekable": Unbrekable,
+    "bench": Bench
 }
 # Index matches allBlocks texture ids 0..11 (see save format).
 TEXTURE_CTORS: tuple[type, ...] = (
@@ -918,7 +780,9 @@ TEXTURE_CTORS: tuple[type, ...] = (
     Sand,          # 8
     Stone,         # 9
     Water,         # 10
-    Unbrekable,    # 11
+    None,          # backpack is not a block (11)
+    Bench,         # 12
+    Unbrekable,    # 18
 )
 
 

@@ -11,6 +11,8 @@ import numpy as np
 def points_are_close(p1, p2, margin=1.0):
     return np.linalg.norm(np.array(p1) - np.array(p2)) <= margin
 
+Y_ONE = Vec3(0, 1, 0)
+
 class Items3D:
 
     def __init__(self, render):
@@ -53,7 +55,7 @@ class Items3D:
 
                 pos = item_mat[3][:3].copy()
 
-                if points_are_close(pos, player.pos.xyz): #picked up
+                if points_are_close(pos, player.pos.xyz, 1.0) or points_are_close(pos, player.pos.xyz + Y_ONE, 1.0): #picked up
                     if player.add_item_in_inventory(identifier): # if it fits in the inventory
                         self.model.remove_instances([pos], model_path)
                         self.items_rot.pop(unique_identifier)

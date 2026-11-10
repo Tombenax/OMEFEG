@@ -18,8 +18,14 @@ OAK_PLANKS = 7
 SAND = 8
 STONE = 9
 WATER = 10
-UNBREKABLE = 14
 BACKPACK = 11
+BENCH = 12
+UNUSED_1 = 13
+UNUSED_2 = 14
+UNUSED_3 = 15
+SELECTED = 16
+UNBREKABLE = 18
+
 
 
 
@@ -102,3 +108,7 @@ class Cobblestone(Block):
 class Unbrekable(Block):
     def __init__(self, position: Vec3 | Sequence[float | int]):
         super().__init__("unbrekable", position, UNBREKABLE, {0:None}, True)
+
+class Bench(Block):
+    def __init__(self, position: Vec3 | Sequence[float | int]):
+        super().__init__("bench", position, BENCH, {0:None}, True, "bench")

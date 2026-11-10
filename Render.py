@@ -56,6 +56,10 @@ INVSCR_IMAGE = Image.open("assets/textures/InventoryScroll.png").convert("RGBA")
 
 INVSCR_W, INVSCR_H = INVSCR_IMAGE.size
 
+BODY_SLOTS = Image.open("assets/textures/body_slots.png").convert("RGBA")
+
+BODY_SLOTS_W, BODY_SLOTS_H = BODY_SLOTS.size
+
 
 # Blocks that filter light instead of blocking it (leaf canopies give
 # dappled shade, water tints instead of full shadow). Encoded as 127 in
@@ -1147,8 +1151,8 @@ class Model:
         if model_identifier in self.instanedmodels:
             return self.instanedmodels[model_identifier].remove_instance(index)
 
-    def remove_instances(self, positions:Sequence[Vec3 | Sequence[Number]] | np.ndarray, model_identifier:str):
-        return self.instanedmodels[model_identifier].remove_instances(positions)
+    def remove_instances(self, positions:Sequence[Vec3 | Sequence[Number]] | np.ndarray, model_identifier:str, upload=True):
+        return self.instanedmodels[model_identifier].remove_instances(positions, upload=upload)
 
     def render_one(self, identifier:str):
         animation = self.animated_models.get(identifier)
@@ -1808,7 +1812,7 @@ class Collectible:
         try:
             self.vao.render(instances=len(self.instances))
         except Exception as e:
-            print("rror while rendering blok items!!!!!!!")
+            print("Error while rendering blok items!!!!!!!")
             print(e)
 
         self.ctx.enable(moderngl.DEPTH_TEST)
@@ -1948,10 +1952,14 @@ class INVSCR:
     def __init__(
         self,
         render: Render,
+        pos_x,
+        pos_y,
         width=INVSCR_W,
         height=INVSCR_H,
         bottom=0,
         scale=1.0,
+        image_=INVSCR_IMAGE,
+        tex_thing=4
     ):
         if width <= 0 or height <= 0:
             raise ValueError("inventory scroll width and height must be positive")
@@ -1967,7 +1975,9 @@ class INVSCR:
         self.height = float(height) * self.scale
         self.bottom = float(bottom)
 
-        image = INVSCR_IMAGE.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
+        self.tex_thing = tex_thing
+
+        image = image_.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
         self.texture = self.ctx.texture(image.size, 4, image.tobytes())
         self.texture.filter = (moderngl.NEAREST, moderngl.NEAREST)
 
@@ -1975,7 +1985,10 @@ class INVSCR:
             vertex_shader=self._VERTEX_SHADER,
             fragment_shader=self._FRAGMENT_SHADER,
         )
-        self.program["inventory_texture"].value = 4
+        self.program["inventory_texture"].value = tex_thing
+
+        self.pos_x = pos_x 
+        self.pos_y = pos_y
 
         # Winding is counter-clockwise after the pixel-to-clip Y flip.
         vertices = np.array([
@@ -1997,14 +2010,33 @@ class INVSCR:
         if screen_width <= 0 or screen_height <= 0:
             return
 
+        if self.pos_x == "center":
+            calc_x = (screen_width - self.width) / 2
+        elif self.pos_x == "left":
+            calc_x = 0
+        elif self.pos_x == "right":
+            calc_x = screen_width - self.width
+        else:
+            raise ValueError("pos_x argument must be center, left or right")
+
+        if self.pos_y == "center":
+            calc_y = (screen_height - self.height) / 2
+        elif self.pos_y == "top":
+            calc_y = 0
+        elif self.pos_y == "bottom":
+            calc_y = screen_height - self.height
+        else:
+            raise ValueError("pos_y argument must be center, top or bottom")
+
+
         self.program["screen_size"].value = (screen_width, screen_height)
         self.program["size"].value = (self.width, self.height)
         self.program["position"].value = (
-            (screen_width - self.width) / 2,
-            screen_height - self.bottom - self.height,
+            calc_x,
+            calc_y
         )
 
-        self.texture.use(location=4)
+        self.texture.use(location=self.tex_thing)
         self.ctx.disable(moderngl.DEPTH_TEST)
         try:
             self.vao.render()

@@ -4,12 +4,13 @@ from Number import Number
 from Vec3 import Vec3
 
 class Block:
-    def __init__(self, block:str, position:Vec3 | Sequence[Number], texture:int, proprieties:dict, collides:bool=True):
+    def __init__(self, block:str, position:Vec3 | Sequence[Number], texture:int, proprieties:dict, collides:bool=True, model="block"):
         self.block = block
         self.position = position.copy() if isinstance(position, Vec3) else Vec3(*position)
         self.texture = texture
         self.proprieties = proprieties
         self.collides = collides
+        self.model = model
 
     def update(self, neighbours):
         """React to being placed. Called once by the world after the

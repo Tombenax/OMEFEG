@@ -502,7 +502,7 @@ def init(render):
         ]
     })
 
-    TEST_ENTITY.add_entity("assets/models/cat.omefeg", Vec3(0, WORLD.radius+1, 0), BS)
+    TEST_ENTITY.add_entity("assets/models/cat.omefeg", Vec3(3, WORLD.radius+1, 0), BS, CAT)
 
     if LOAD_WORLD:
         saved_player = open_save_file("player.bin", load_player)

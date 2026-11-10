@@ -25,8 +25,8 @@ UNUSED_2 = 14
 UNUSED_3 = 15
 SELECTED = 16
 UNBREKABLE = 18
-
-
+PLAYER = 19
+CAT = 20
 
 
 class Grass(Block):

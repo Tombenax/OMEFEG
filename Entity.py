@@ -17,18 +17,18 @@ class Entitys:
         self.entities_names_to_evrything = {}
         self.f__k_that = False
 
-    def add_entity(self, model_path:str, pos:Vec3, behaviur_script:BehaviurScript):
+    def add_entity(self, model_path:str, pos:Vec3, behaviur_script:BehaviurScript, tex:int):
 
         str_time = str(time())
 
         name = model_path + str_time
 
         if not model_path in self.entities_names:
-            attach_blender_model(self.MODEL, name, model_path, pos, 15)
+            attach_blender_model(self.MODEL, name, model_path, pos, tex)
             self.entities_names_to_evrything[name] = (behaviur_script, self.MODEL.instanedmodels[name].active_instances[-1], name)
 
         else:
-            self.MODEL.add_instances([pos], [15], name, [None])
+            self.MODEL.add_instances([pos], [tex], name, [None])
             model_data = load_blender_model(model_path)
             player = BlenderAnimationPlayer(
                 model_data,

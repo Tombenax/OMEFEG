@@ -8,9 +8,9 @@ import os
 import sys
 import time
 import math
-import random as _random_module  # explicit: was previously relying on star-import
+import random as _random_module
 import importlib as _importlib
-from random import Random  # explicit: was via `from Render import *`
+from random import Random 
 import json
 
 from Entity import Entitys
@@ -177,6 +177,37 @@ max_x, min_x, max_y, min_y = 0, 0, 0, 0
 
 def load_player(data):
     return list(struct.unpack(">dddff", data))
+
+def load_world(data):
+    posess = []
+    texxes = []
+
+    for i in range(0, len(data), 25):
+        d = list(struct.unpack(">dddb", data[i:i+25]))
+        x = d[0]
+        y = d[1]
+        z = d[2]
+        t = d[3]
+
+        posess.append([x, y, z])
+        texxes.append(t)
+
+    return posess, texxes
+
+def load_chunks(data):
+    chunks = set()
+
+    for i in range(0, len(data), 24):
+        d = list(struct.unpack(">ddd", data[i:i+24]))
+        x = d[0]
+        y = d[1]
+        z = d[2]
+
+        chunks.add((x, y, z))
+
+    return chunks
+
+        
 
 
 class Menus:
@@ -506,14 +537,17 @@ def init(render):
 
     if LOAD_WORLD:
         saved_player = open_save_file("player.bin", load_player)
-        if saved_player is not None:
-            try:
-                PLAYER.set_pos(Vec3(*saved_player[0:3]))
-                render.CAMERA.yaw = float(saved_player[3])
-                render.CAMERA.pitch = float(saved_player[4])
-                print(saved_player, render.CAMERA.position, render.CAMERA.yaw, render.CAMERA.pitch)
-            except Exception:
-                pass
+        saved_world = open_save_file("world.bin", load_world)
+        saved_chunks = open_save_file("chunks.bin", load_chunks)
+
+        PLAYER.set_pos(Vec3(*saved_player[0:3]))
+        PLAYER.camera.yaw = float(saved_player[3])
+        PLAYER.camera.pitch = float(saved_player[4])
+
+        WORLD.generated_chunks = saved_chunks
+
+        WORLD.place_blocks(saved_world[0], saved_world[1])
+
 
     min_x = 0
     max_x = 1
@@ -582,10 +616,8 @@ def init(render):
     charset=CHARSET
     )
 
-    # Top-left status texts stay left-aligned (centered would push them)
-    # half off-screen); menus default to centered.
     hud.add_texts(
-        ["FPS: negative Infinity", "X: HELL NAH Y: NEGATIVE INFINITY Z: EASTER EGGS BE LIKE", "BPS: FUCK MYSELF"],
+        ["FPS: negative Infinity", "X: HELL NAH Y: NEGATIVE INFINITY Z: EASTER EGGS BE LIKE", "BPS: F**K MYSELF"],
         [[0, 0], [0, 30], [WIDTH, 0]],
         ["FPS", "XYZ", "bps"],
         centered=False,
@@ -593,7 +625,9 @@ def init(render):
 
     render.set_window_size_callback(lambda x,y,z: render.resized(y,z))
 
-    render.set_lights([Vec3(0, 50, 0)], [(1, 1, 1, 1)])
+    render.set_lights([Vec3(0, 50, 0)], [(1, 0, 0, 1)])
+
+    render.set_cursor_pos(0, 0)
 
     load_mods()
 
@@ -1199,24 +1233,30 @@ if MULTIPLAYER:
     except Exception:
         pass
 
-try:
-    _should_save = not MULTIPLAYER
-except NameError:
-    _should_save = False
-if _should_save:
+should_save = not MULTIPLAYER
+
+if should_save:
     print("Saving world")
-    try:
-        saved_chunks = WORLD.save_all_loaded_chunks()
-    except (AttributeError, NameError):
-        saved_chunks = 0
-    print(f"Saved {saved_chunks} chunks around the player (far chunks were already saved on unload)")
 
-    try:
-        data = struct.pack(">dddff", *PLAYER.pos.tolist(), render.CAMERA.yaw, render.CAMERA.pitch)
+    world_data = bytes()
 
-        save("player.bin", data)
-    except (AttributeError, NameError):
-        pass
+    for block in WORLD.blocks.blocks_list:
+
+        world_data += struct.pack(">dddb", *block.position, block.texture)
+
+    save("world.bin", world_data)
+
+    chunks_data = bytes()
+
+    for chunk in WORLD.generated_chunks:
+
+        chunks_data += struct.pack(">ddd", *chunk)
+
+    save("chunks.bin", chunks_data)
+
+    data = struct.pack(">dddff", *PLAYER.pos.tolist(), render.CAMERA.yaw, render.CAMERA.pitch)
+
+    save("player.bin", data)
 
     print("Saved world")
 

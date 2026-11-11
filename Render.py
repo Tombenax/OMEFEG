@@ -188,6 +188,9 @@ class Render:
     def set_window_should_close(self, value):
         glfw.set_window_should_close(self.window, value)
 
+    def set_cursor_pos(self, x, y):
+        glfw.set_cursor_pos(self.window, x, y)
+
     def resized(self, width, height):
         global PROJECTION, WIDTH, HEIGHT
 

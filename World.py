@@ -7,7 +7,9 @@ import sys
 import time
 from queue import Empty, Queue
 
-from utils import get_texture
+from utils import get_block, get_texture
+
+import json
 
 from perlineNoise import PerlinNoiseFactory
 
@@ -313,6 +315,8 @@ class World:
 
         self._last_idx = None
 
+        self._STRUCTURES = {}
+
         if self.generate_all_chunks:
             self.generate_entire_world()
 
@@ -342,17 +346,17 @@ class World:
             [block.position], [block.texture], block.model, [tuple(rotation)]
         )
 
-    def place_blocks(self, pos, tex, rotations=[[0, 0, 0]], models=[]):
+    def place_blocks(self, pos, tex, rotations=[[0, 0, 0]]):
         rotations = list(rotations)
-        things = {name: [[], [], []] for name in models}
-        for index, (pos_, tex_, model) in enumerate(zip(pos, tex, models)):
-            block = get_texture(tex_, *pos_)
+        things = {}
+        for index, (pos_, tex_) in enumerate(zip(pos, tex)):
+            block = get_block(tex_, pos_)
             self.blocks.add(block)
             self.update_queue.put(block.update(self.get_neighbours(block.position)))
             rotation = tuple(rotations[index] if index < len(rotations) else (0, 0, 0))
-            #block_positions.append(block.position)
-            #block_textures.append(block.texture)
-            #block_rotations.append(rotation)
+            model = block.model
+
+            if things.get(model) is None: things[model] = [[], [], []]
 
             things[model][0].append(block.position)
             things[model][1].append(block.texture)
@@ -419,8 +423,25 @@ class World:
 
     
     def destroy_block(self, block: Block, model="block"):
-        self.blocks.remove(block)
-        self.model.remove_instances([block.position], model_identifier=model)
+        if block.proprieties["breakable"]:
+            self.blocks.remove(block)
+            self.model.remove_instances([block.position], model_identifier=model)
+
+    def load_structure(self, name:str):
+
+        if a := self._STRUCTURES.get(name):
+            return a
+
+        else:
+
+            with open("worldgeneration/structures/"+name) as f:
+                structure = json.load(f)
+
+            self._STRUCTURES[name] = structure["blocks"]
+
+        return structure["blocks"]
+
+
 
 
     def _generate_chunk_thread(self, x, y, z):
@@ -456,24 +477,36 @@ class World:
             rotations.extend(arr[:, 1])
             textures = [GRASS] * len(arr)
 
+            stone_arr = [STONE] * len(arr)
+
             positions.extend(arr[:, 0] - rem)
             rotations.extend(arr[:, 1] - rem)
-            textures.extend([STONE] * len(arr))
+            textures.extend(stone_arr)
 
-            thing1 = Vec3(x+5, y, z+5)
-            thing2 = Vec3(0, 0, 0)
 
-            rotations.extend([thing2]*4)
+            positions.extend(arr[:, 0] - rem*2)
+            rotations.extend(arr[:, 1] - rem*2)
+            textures.extend([UNBREKABLE] * len(arr))
+            
+            blocks = self.load_structure("oak_medium_tree.json")
 
-            r = random.random() < 0.5
+            blocks_arr = np.asarray(blocks)
 
-            textures.extend([OAK_LOG if r else BIRCH_LOG]*3)
-            textures.append(OAK_LEAVE if r else BIRCH_LEAVE)
+            positions.extend(blocks_arr[:, [0, 1, 2]].astype(np.int64)+[x+5, y+1, z+5])
+            rotations.extend([[0, 0, 0]] * len(blocks_arr))
+            textures.extend(blocks_arr[:, 3])
 
-            positions.append(thing1 + rem)
-            positions.append(thing1 + rem*2)
-            positions.append(thing1 + rem*3)
-            positions.append(thing1 + rem*4)
+            gen_temple = random.random()
+
+            if gen_temple >= 0.995:
+
+                blocks = self.load_structure("temple.json")
+
+                blocks_arr = np.asarray(blocks)
+
+                positions.extend(blocks_arr[:, [0, 1, 2]].astype(np.int64)+[x+10, y+1, z+10])
+                rotations.extend([[0, 0, 0]] * len(blocks_arr))
+                textures.extend(blocks_arr[:, 3])
 
             """
 
@@ -515,7 +548,7 @@ class World:
             textures = [GRASS] * len(positions)
             rotations = [rotation for _position, rotation in self.sphere]
 
-            self.place_blocks(positions, textures, rotations, ["block"]*len(positions))
+            self.place_blocks(positions, textures, rotations)
 
             self.sphere = None
 
@@ -529,7 +562,7 @@ class World:
         rotations = sphere[1]
         textures = sphere[2]
 
-        self.place_blocks(positions, textures, rotations, ["block"]*len(positions))
+        self.place_blocks(positions, textures, rotations)
 
     def generate_chunk(self, x, y, z):
         if (x, y, z) in self.generated_chunks and self.can_generate_any_chunks: return

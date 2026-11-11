@@ -782,6 +782,11 @@ TEXTURE_CTORS: tuple[type, ...] = (
     Water,         # 10
     None,          # backpack is not a block (11)
     Bench,         # 12
+    None,          # 13 (PLACEHOLDER)
+    None,          # 14 (PLACEHOLDER)
+    None,          # 15 (PLACEHOLDER)
+    None,          # 16 (PLACEHOLDER)
+    None,          # 17 (PLACEHOLDER)
     Unbrekable,    # 18
 )
 
@@ -909,6 +914,7 @@ def open_save_file(filename:str, callback:Callable):
     d = _save_dir()
 
     if not Path(os.path.join(d, filename)).exists():
+        print("FileNotFound: in open_save_file the file", filename, "is not present")
         return None
 
     with open(os.path.join(d, filename), "rb") as f:

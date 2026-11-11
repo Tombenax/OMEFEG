@@ -31,8 +31,7 @@ class BlocksList:
         self._index_position(tuple(block.position))
 
     def extend(self, blocks):
-        # Single pass (was set-comprehension alloc + second loop over the
-        # same ~600 blocks). Locals avoid attribute lookups per block.
+        # i have no clue how this works
         _blist = self.blocks_list
         _bpos = self.blocks_positions
         _pblocks = self.positions_blocks
@@ -62,60 +61,6 @@ class BlocksList:
                 _textures.append(block.texture)
             except AttributeError:
                 _textures.append(0)
-
-    @classmethod
-    def from_records(cls, records, ctors):
-        """Build a populated list from save-file records in a single pass.
-
-        `records` yields (x, y, z, texture_id) tuples (e.g. Struct.iter_unpack
-        over a chunk .bin file); `ctors` maps texture id -> Block class.
-        Records with unknown ids are skipped, matching load_saved_blocks.
-
-        Fuses construct + index (the split path built Block objects in one
-        loop and indexed them in a second): one pass makes the objects AND
-        every index. Voxel keys reuse the unpacked ints directly (struct
-        yields ints, so no per-block int() conversions), and the texture
-        id doubles as the texture (ctors map id -> class by construction).
-        Pure Python, worker-thread safe on a fresh instance.
-        """
-        self = cls()
-        _blist = self.blocks_list
-        _bpos = self.blocks_positions
-        _pblocks = self.positions_blocks
-        _occ = self.occupied
-        _positions = self.positions
-        _textures = self.textures
-        try:
-            _nctors = len(ctors)
-        except TypeError:
-            return self
-        _app = _blist.append
-        _papp = _positions.append
-        _tapp = _textures.append
-        for x, y, z, t in records:
-            try:
-                ctor = ctors[t] if t < _nctors else None
-            except TypeError:
-                continue
-            if ctor is None:
-                continue
-            try:
-                block = ctor(Vec3(x, y, z))
-            except Exception:
-                continue
-            _pos = block.position
-            if not isinstance(_pos, Vec3):
-                _pos = Vec3(*_pos)
-                block.position = _pos
-            _key = (x, y, z)
-            _app(block)
-            _bpos[block] = _pos
-            _pblocks[_key] = block
-            _occ.add(_key)
-            _papp(_pos)
-            _tapp(t)
-            self._index_position(_key)
-        return self
 
     def remove(self, block):
         self.blocks_list.remove(block)

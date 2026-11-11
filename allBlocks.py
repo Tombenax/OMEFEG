@@ -31,45 +31,45 @@ CAT = 20
 
 class Grass(Block):
     def __init__(self, position: Vec3 | Sequence[float | int]):
-        super().__init__("grass", position, GRASS, {0:None}, True)
+        super().__init__("grass", position, GRASS, {"breakable":True}, True)
 
 class Dirt(Block):
     def __init__(self, position: Vec3 | Sequence[float | int]):
-        super().__init__("dirt", position, DIRT, {0:None}, True)
+        super().__init__("dirt", position, DIRT, {"breakable":True}, True)
 
 class Stone(Block):
     def __init__(self, position: Vec3 | Sequence[float | int]):
-        super().__init__("stone", position, STONE, {0:None}, True)
+        super().__init__("stone", position, STONE, {"breakable":True}, True)
 
 class Birch_Leave(Block):
     def __init__(self, position: Vec3 | Sequence[float | int]):
-        super().__init__("birch_leave", position, BIRCH_LEAVE, {0:None}, True)
+        super().__init__("birch_leave", position, BIRCH_LEAVE, {"breakable":True}, True)
 
 class Birch_Log(Block):
     def __init__(self, position: Vec3 | Sequence[float | int]):
-        super().__init__("birch_log", position, BIRCH_LOG, {0:None}, True)
+        super().__init__("birch_log", position, BIRCH_LOG, {"breakable":True}, True)
 
 class Oak_Leave(Block):
     def __init__(self, position: Vec3 | Sequence[float | int]):
-        super().__init__("oak_leave", position, OAK_LEAVE, {0:None}, True)
+        super().__init__("oak_leave", position, OAK_LEAVE, {"breakable":True}, True)
 
 class Oak_Log(Block):
     def __init__(self, position: Vec3 | Sequence[float | int]):
-        super().__init__("oak_log", position, OAK_LOG, {0:None}, True)
+        super().__init__("oak_log", position, OAK_LOG, {"breakable":True}, True)
 
 class Oak_Planks(Block):
     def __init__(self, position: Vec3 | Sequence[float | int]):
-        super().__init__("oak_planks", position, OAK_PLANKS, {0:None}, True)
+        super().__init__("oak_planks", position, OAK_PLANKS, {"breakable":True}, True)
 
 class Sand(Block):
     def __init__(self, position: Vec3 | Sequence[float | int]):
-        super().__init__("sand", position, SAND, {0:None}, True)
+        super().__init__("sand", position, SAND, {"breakable":True}, True)
 
 MAX_WATER_LENGHT = 5
 
 class Water(Block):
     def __init__(self, position: Vec3 | Sequence[float | int], source:bool=True, lenght:int=MAX_WATER_LENGHT):
-        super().__init__("water", position, WATER, {0:None}, False)
+        super().__init__("water", position, WATER, {"breakable":True}, False)
         self.source = source
         self.lenght = lenght
         self.chunk_pos = Vec3(self.position[0]//10*10, 0, self.position[2]//10*10)
@@ -103,12 +103,12 @@ class Water(Block):
 
 class Cobblestone(Block):
     def __init__(self, position: Vec3 | Sequence[float | int]):
-        super().__init__("cobblestone", position, COBBLESTONE, {0:None}, True)
+        super().__init__("cobblestone", position, COBBLESTONE, {"breakable":True}, True)
 
 class Unbrekable(Block):
     def __init__(self, position: Vec3 | Sequence[float | int]):
-        super().__init__("unbrekable", position, UNBREKABLE, {0:None}, True)
+        super().__init__("unbrekable", position, UNBREKABLE, {"breakable":False}, True)
 
 class Bench(Block):
     def __init__(self, position: Vec3 | Sequence[float | int]):
-        super().__init__("bench", position, BENCH, {0:None}, True, "bench")
+        super().__init__("bench", position, BENCH, {"breakable":True}, True, "bench")

@@ -139,7 +139,7 @@ class Player:
     def get_selcted_block(self):
         try:
 
-            if self.inventory_list[self.selected] != "backpack":
+            if self.inventory_list[self.selected] != BACKPACK:
                 return self.inventory_list[self.selected]
             else:
                 return None

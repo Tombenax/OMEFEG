@@ -341,8 +341,15 @@ PLAYER = None
 
 NPCS = None
 
+IS_BENCH_OPENED = False
+
 def init(render):
-    global TEXT, coll, WORLD, RENDER_DISTANCE, NETWORK, PLAYERS, min_x, max_x, min_y, max_y, hud, SLECTED, menus, selected, MULTIPLAYER, LOAD_WORLD, PLAYER, NPCS, TEST_ENTITY, ITEMS, coldbar, body_slots
+    global TEXT, coll, WORLD
+    global RENDER_DISTANCE, NETWORK, PLAYERS
+    global min_x, max_x, min_y, max_y, hud
+    global SLECTED, menus, selected, MULTIPLAYER
+    global LOAD_WORLD, PLAYER, NPCS, TEST_ENTITY
+    global ITEMS, coldbar, body_slots, bench_gui
 
     PLAYER = Player(render)
 
@@ -358,9 +365,11 @@ def init(render):
 
     ITEMS = Items3D(render)
 
-    coldbar = INVSCR(render, scale=2.5, pos_x="center", pos_y="bottom")
+    coldbar = INVSCR(render, INVSCR_IMAGE, pos_x="center", pos_y="bottom", scale=2.5)
 
-    body_slots = INVSCR(render, width=BODY_SLOTS_W, height=BODY_SLOTS_H, scale=2.5, image_=BODY_SLOTS, tex_thing=5, pos_x="left", pos_y="center")
+    body_slots = INVSCR(render, BODY_SLOTS, pos_x="left", pos_y="center", scale=2.5)
+
+    bench_gui = INVSCR(render, BENCH_IMG, pos_x="center", pos_y="center", scale=10)
 
     ITEMS.add_item(Vec3(5, 1_000_001, 0), "assets/models/Backpack.obj", BACKPACK)
 
@@ -497,6 +506,8 @@ def init(render):
 
     WORLD = World(render, 1_000_000, [0, 0, 0], 100) #, random_seed, heightmap, rules, sin_world=sin_world, biomes = not FLAT, persistent=(not MULTIPLAYER and not NO_SAVE))
 
+    WORLD.place_block(get_block(BENCH, Vec3(5, WORLD.radius+1, 0)))
+
     PLAYER.set_pos(Vec3(0, WORLD.radius+1, 0))
 
     TEST_ENTITY = Entitys(render)
@@ -625,7 +636,7 @@ def init(render):
 
     render.set_window_size_callback(lambda x,y,z: render.resized(y,z))
 
-    render.set_lights([Vec3(0, 50, 0)], [(1, 0, 0, 1)])
+    render.set_lights([Vec3(0, 50, 0)], [(1, 1, 1, 1)])
 
     render.set_cursor_pos(0, 0)
 
@@ -1051,8 +1062,16 @@ def update(render:Render):
     global pause, start_pos, MULTIPLAYER
     global LOAD_WORLD, sound_player, last_asked
     global TEST_ENTITY, ITEMS, coldbar, body_slots
+    global bench_gui, IS_BENCH_OPENED
 
     last_asked += 1
+
+    if IS_BENCH_OPENED:
+        bench_gui.render()
+        coldbar.render()
+        PLAYER.render_2D_stuff()
+
+        pause = True
 
     if render.get_key(render.KEY_ESCAPE) == render.PRESS and cooldown3.is_active:
         pause = not pause
@@ -1062,6 +1081,7 @@ def update(render:Render):
 
             menus.activate("esc_screen")
         else:
+            if IS_BENCH_OPENED: IS_BENCH_OPENED = False
             render.set_input_mode(render.CURSOR,render.CURSOR_DISABLED)
 
             menus.deactivate("esc_screen")
@@ -1133,8 +1153,14 @@ def update(render:Render):
             # placed block so remotes reproduce the same result.
             # (block_placed keeps its old meaning for mods: the clicked block.)
             block_placed = (PLAYER.get_selcted_block(), position + normal)
-            if block_placed[0] is not None:
-                WORLD.place_block(get_block(*block_placed))
+
+            print(WORLD.get_block_at(position))
+
+            if WORLD.get_block_at(position).block == "bench":
+                IS_BENCH_OPENED = True
+            else:
+                if block_placed[0] is not None:
+                    WORLD.place_block(get_block(*block_placed))
 
         if render.get_mouse_button(render.MOUSE_BUTTON_RIGHT) == render.PRESS and cooldown2.is_active:
             block = WORLD.get_block_at(position)
@@ -1240,7 +1266,11 @@ if should_save:
 
     world_data = bytes()
 
-    for block in WORLD.blocks.blocks_list:
+    lbl = len(WORLD.blocks.blocks_list)
+
+    for idx, block in enumerate(WORLD.blocks.blocks_list):
+
+        print(f"Save: {round((idx+1)/lbl*100, 2)}%")
 
         world_data += struct.pack(">dddb", *block.position, block.texture)
 
@@ -1260,6 +1290,6 @@ if should_save:
 
     print("Saved world")
 
-    
+openal.oalQuit()
 
 print("Stopped executing game.")

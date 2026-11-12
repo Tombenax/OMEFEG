@@ -302,6 +302,8 @@ class World:
         self.diameter = radius * 2
         self._am_i_generating_chunk = False
         self.sphere = None
+        self.lock = threading.Lock()
+        self.thig_dict_to_return = {"result":None}
 
         self.generate_chunk_queue = Queue()
         
@@ -316,6 +318,8 @@ class World:
         self._last_idx = None
 
         self._STRUCTURES = {}
+
+        self.th = None
 
         if self.generate_all_chunks:
             self.generate_entire_world()
@@ -498,7 +502,7 @@ class World:
 
             gen_temple = random.random()
 
-            if gen_temple >= 0.995:
+            if gen_temple >= 0.99:
 
                 blocks = self.load_structure("temple.json")
 
@@ -508,29 +512,13 @@ class World:
                 rotations.extend([[0, 0, 0]] * len(blocks_arr))
                 textures.extend(blocks_arr[:, 3])
 
-            """
+                blocks = self.load_structure("benchStructure.json")
 
-            if random.random() < 0.5:
-                for i in range(3):
-                    positions.append(pos + rem * (i+1))
-                    rotations.append(rot)
-                    textures.append(OAK_LOG)
+                blocks_arr = np.asarray(blocks)
 
-                positions.append(pos + rem * (i+2))
-                rotations.append(rot)
-                textures.append(OAK_LEAVE)
-
-            else:
-                for i in range(3):
-                    positions.append(pos + rem * (i+1))
-                    rotations.append(rot)
-                    textures.append(BIRCH_LOG)
-
-                positions.append(pos + rem * (i+2))
-                rotations.append(rot)
-                textures.append(BIRCH_LEAVE)
-            
-            """
+                positions.extend(blocks_arr[:, [0, 1, 2]].astype(np.int64)+[x+14, y+1, z+10])
+                rotations.extend([[0, 0, 0]] * len(blocks_arr))
+                textures.extend(blocks_arr[:, 3])
 
         self.generate_chunk_queue.put((positions, rotations, textures))
 
@@ -574,53 +562,50 @@ class World:
     def get_block_y_at(self, x, z):
         return 1
 
-    def place_chunks_step(self):
+    def place_chunks_step(self, thig_dict_to_return):
 
-        if self._last_idx is None:
-            try:
-                sphere = self.generate_chunk_queue.get_nowait()
-            except Empty:
-                return
+        try:
+            sphere = self.generate_chunk_queue.get_nowait()
+        except Empty:
+            return
 
-            self._pos = sphere[0]
-            self._rotations = sphere[1]
-            self._tex = sphere[2]
-
-            self._last_idx = 0
-
-        pos, rotations, tex = self._pos, self._rotations, self._tex
+        pos = sphere[0]
+        rotations = sphere[1]
+        tex = sphere[2]
 
         rotations = list(rotations)
-        block_positions, block_textures, block_rotations = [], [], []
-        for i in range(len(pos)):
-            try:
-                index, pos_, tex_ = self._last_idx, pos[self._last_idx], tex[self._last_idx]
+        things = {}
+        for index, (pos_, tex_) in enumerate(zip(pos, tex)):
+            block = get_block(tex_, pos_)
+            self.blocks.add(block)
+            self.update_queue.put(block.update(self.get_neighbours(block.position)))
+            rotation = tuple(rotations[index] if index < len(rotations) else (0, 0, 0))
+            model = block.model
 
-                block = get_texture(tex_, *pos_)
-                self.blocks.add(block)
-                self.update_queue.put(block.update(self.get_neighbours(block.position)))
-                rotation = tuple(rotations[index] if index < len(rotations) else (0, 0, 0))
-                block_positions.append(block.position)
-                block_textures.append(block.texture)
-                block_rotations.append(rotation)
+            if things.get(model) is None: things[model] = [[], [], []]
 
-                self._last_idx += 1
+            things[model][0].append(block.position)
+            things[model][1].append(block.texture)
+            things[model][2].append(rotation)
 
-            except IndexError:
-                break
 
-        if self._last_idx == len(pos):
-            self._last_idx = None
+        thig_dict_to_return["result"] = things
+        
 
-            if block_positions:
-                self.model.add_instances(
-                    block_positions, block_textures, "block", block_rotations
-                )
-                
 
     def render_blocks(self):
 
-        self.place_chunks()
+        if (self.th is None or not self.th.is_alive()) and self.thig_dict_to_return["result"] is None:
+            self.th = threading.Thread(target=self.place_chunks_step, args=(self.thig_dict_to_return,), daemon=True)
+            self.th.start()
+
+        if self.thig_dict_to_return["result"] is not None:
+            for model, (pos, tex, rot) in self.thig_dict_to_return["result"].items():
+                self.model.add_instances(
+                    pos, tex, model, rot
+                )
+
+            self.thig_dict_to_return["result"] = None
 
         model:InstancedModel = self.model.instanedmodels["block"]
 

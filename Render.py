@@ -60,6 +60,10 @@ BODY_SLOTS = Image.open("assets/textures/body_slots.png").convert("RGBA")
 
 BODY_SLOTS_W, BODY_SLOTS_H = BODY_SLOTS.size
 
+BENCH_IMG = Image.open("assets/GUIs/BENCH.png").convert("RGBA")
+
+BENCH_W, BENCH_H = BENCH_IMG.size
+
 
 # Blocks that filter light instead of blocking it (leaf canopies give
 # dappled shade, water tints instead of full shadow). Encoded as 127 in
@@ -1918,6 +1922,7 @@ class HUDText(InstancedText):
         finally:
             self.ctx.enable(moderngl.DEPTH_TEST)
 
+last_invscr = 4
 
 class INVSCR:
     _VERTEX_SHADER = """
@@ -1955,19 +1960,18 @@ class INVSCR:
     def __init__(
         self,
         render: Render,
+        image_,
         pos_x,
         pos_y,
-        width=INVSCR_W,
-        height=INVSCR_H,
-        bottom=0,
         scale=1.0,
-        image_=INVSCR_IMAGE,
-        tex_thing=4
     ):
+
+        global last_invscr
+
+        width, height = image_.size
+        
         if width <= 0 or height <= 0:
             raise ValueError("inventory scroll width and height must be positive")
-        if bottom < 0:
-            raise ValueError("inventory scroll bottom offset cannot be negative")
         if scale <= 0:
             raise ValueError("inventory scroll scale must be positive")
 
@@ -1976,9 +1980,10 @@ class INVSCR:
         self.scale = float(scale)
         self.width = float(width) * self.scale
         self.height = float(height) * self.scale
-        self.bottom = float(bottom)
 
-        self.tex_thing = tex_thing
+        self.tex_thing = last_invscr
+
+        last_invscr += 1
 
         image = image_.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
         self.texture = self.ctx.texture(image.size, 4, image.tobytes())
@@ -1988,7 +1993,7 @@ class INVSCR:
             vertex_shader=self._VERTEX_SHADER,
             fragment_shader=self._FRAGMENT_SHADER,
         )
-        self.program["inventory_texture"].value = tex_thing
+        self.program["inventory_texture"].value = self.tex_thing
 
         self.pos_x = pos_x 
         self.pos_y = pos_y

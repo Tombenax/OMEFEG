@@ -1,26 +1,63 @@
+import json
+
 from ursina import *
 from ursina.prefabs.editor_camera import EditorCamera
 import os
+from PIL import Image
 
 app = Ursina()
 
-# Load textures dynamically
 texture_folder = 'assets/textures'
-textures = [f for f in os.listdir(texture_folder) if f.endswith(('.png', '.jpg'))]
+atlas_path = os.path.join(texture_folder, 'texture.png')
+atlas_tile_size = 64
+block_texture_ids = {
+    "birch_leave": 0,
+    "birch_log": 1,
+    "cobblestone": 2,
+    "dirt": 3,
+    "grass": 4,
+    "oak_leave": 5,
+    "oak_log": 6,
+    "oak_planks": 7,
+    "sand": 8,
+    "stone": 9,
+    "water": 10,
+    "bench": 12,
+    "unbrekable": 18,
+}
+textures = list(block_texture_ids)
 
-current_texture_index = 0
+with Image.open(atlas_path) as atlas:
+    atlas = atlas.convert("RGBA")
+    atlas_columns = atlas.width // atlas_tile_size
+    if atlas.width % atlas_tile_size or atlas.height % atlas_tile_size:
+        raise ValueError(f"{atlas_path} dimensions must be multiples of {atlas_tile_size}")
+
+    texture_previews = {}
+    for name, texture_id in block_texture_ids.items():
+        column = texture_id % atlas_columns
+        row = texture_id // atlas_columns
+        tile = atlas.crop((
+            column * atlas_tile_size,
+            row * atlas_tile_size,
+            (column + 1) * atlas_tile_size,
+            (row + 1) * atlas_tile_size,
+        ))
+        texture_previews[name] = Texture(tile)
+
+current_texture_index = textures.index("grass")
 blocks = []
 menu_open = False
 texture_buttons = []
 
 class Voxel(Button):
-    def __init__(self, position=(0,0,0), texture_name="grass.png"):
+    def __init__(self, position=(0,0,0), texture_name="grass"):
         super().__init__(
             parent=scene,
             position=position,
             model='assets/models/block.obj',
             origin_y=0.5,
-            texture=f"{texture_folder}/{texture_name}",
+            texture=texture_previews[texture_name],
             color=color.white,
             scale=1
         )
@@ -42,8 +79,7 @@ class Voxel(Button):
                     blocks.remove(self)
                 destroy(self)
 
-# Dummy voxel (your original trick)
-Voxel(texture_name="use to texture.png")
+Voxel()
 blocks.pop(0)
 
 # Editor camera
@@ -60,7 +96,7 @@ def open_texture_menu():
     for i, tex in enumerate(textures):
         btn = Button(
             parent=camera.ui,
-            texture=f"{texture_folder}/{tex}",
+            texture=texture_previews[tex],
             scale=0.1,
             position=(-0.4 + (i % 8)*0.12, 0.4 - (i // 8)*0.12),
             color=color.white,
@@ -87,11 +123,15 @@ def close_texture_menu():
 # SAVE FUNCTION
 # ======================
 
-def save_structure(filename="structure.txt"):
+def save_structure(filename="worldgeneration/structures/newStructure.json"):
+    data = {"blocks":[]}
+    for block in blocks:
+        x, y, z = block.position
+        data["blocks"].append([int(x), int(y-1), int(z), block.texture_name.removesuffix('.png')])
+
     with open(filename, "w") as f:
-        for block in blocks:
-            x, y, z = block.position
-            f.write(f"{int(x)}\n{int(y-1)}\n{int(z)}\n{block.texture_name.removesuffix('.png')}\n")
+        json.dump(data, f)
+
 
 # ======================
 # INPUT HANDLER

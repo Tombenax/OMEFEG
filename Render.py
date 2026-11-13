@@ -1763,6 +1763,8 @@ class Collectible:
         self.instances = np.zeros((0, 4, 4), dtype="f8")
         self.tex_insta = np.zeros((0,), dtype="f8")
 
+        self.all_posses = []
+
     def _upload(self):
         instance_data = np.column_stack(
             (self.instances[:, 3, :2], self.tex_insta)
@@ -1776,6 +1778,9 @@ class Collectible:
         positions: list[Vec3],
         textures: list[int],
     ):
+
+        self.all_posses.extend(positions)
+        
         positions = np.asarray(positions, dtype="f8")
         if positions.ndim == 1:
             positions = positions.reshape(1, -1)
@@ -1801,11 +1806,28 @@ class Collectible:
 
         del self.instances
         del self.tex_insta
+        del self.all_posses
 
         self.instances = np.zeros((0, 4, 4), dtype="f8")
         self.tex_insta = np.zeros((0,), dtype="f8")
+        self.all_posses = []        
 
         self._upload()
+
+    def update(self):
+        x, y = self.render_.get_cursor_pos()
+        for idx, pos in enumerate(self.all_posses):
+            if pos.x <= x and pos.x+30 >= x:
+                if pos.y <= y and pos.y+30 >= y:
+                    if self.render_.get_mouse_button(self.render_.MOUSE_BUTTON_LEFT):
+                        self.instances[idx][3][0] = x-15
+                        self.instances[idx][3][1] = y-15
+                        self.all_posses[idx] = Vec3(x-15, y-15, 0)
+
+                        self._upload()
+
+                        break
+        
 
     def render(self):
         if len(self.instances) == 0:

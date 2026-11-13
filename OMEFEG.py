@@ -77,7 +77,7 @@ def convert_to_blocks(data):
     try:
         for x, y, z, t in struct.iter_unpack('>qqqB', data):
             try:
-                b = get_texture(t, x, y, z)
+                b = get_block(t, Vec3(x, y, z))
             except Exception:
                 continue
             if b is not None:
@@ -95,7 +95,7 @@ def convert_to_blocks(data):
                 idx += 8
                 t = int.from_bytes(data[idx:idx+1])
                 idx += 1
-                _append(get_texture(t, x, y, z))
+                _append(get_block(t, Vec3(x, y, z)))
             except Exception:
                 break
     return blocks
@@ -638,399 +638,16 @@ def init(render):
 
     render.set_lights([Vec3(0, 50, 0)], [(1, 1, 1, 1)])
 
-    render.set_cursor_pos(0, 0)
+    render.set_cursor_pos(WIDTH/2, HEIGHT/2)
 
     load_mods()
 
-    # Cached init funcs (was exec() per mod with string recompile).
     for _init_fn in list(mods_init_funcs):
         try:
             _init_fn(globals(), locals())
         except Exception as _e:
             print(f"Mod init failed: {_e}")
 
-    
-
-posses, rotations = [], []
-block_updates = []
-
-# --- Multiplayer: single persistent net thread @ fixed tick rate ---
-# Old code spawned a new thread every frame that did 4 serial RTTs
-# (setData/getData/setBlock/getBlock) with 5s blocking receives and
-# shared lists with no locking. New code: one daemon thread at 20Hz,
-# one combined tick RTT, all shared state under _mp_lock.
-import time as _mp_time
-import socket as _mp_socket
-import collections as _mp_collections
-
-MP_TICK_INTERVAL = 0.05  # 20 Hz: bounds packets/s per client
-MP_OUTGOING_CAP = 500  # same cap as update()'s append guards
-# Max block updates per tick: the server caps a packet at
-# MAX_BLOCK_UPDATE_BATCH (200) and silently drops the rest, so never send
-# more (leftovers ride the next ticks). 200/tick = 4000 blocks/s.
-MP_BLOCKS_PER_TICK = 200
-_mp_lock = threading.Lock()
-_mp_thread = None
-thr = None  # back-compat alias for mods importing `thr`
-is_process_finished = True  # back-compat; no longer spawn-per-frame
-_mp_stop = False
-_mp_started = False
-_mp_own_id = None
-_mp_state = {"coords": Vec3(0, 2, 0), "yaw": 0, "pitch": 0}
-_mp_backoff_until = 0.0
-_mp_use_legacy = False
-# Updates we sent and expect back as echo. The server broadcasts history
-# to everyone including the sender (who already applied them locally), so
-# without this every placed block would be added twice. Net thread only.
-_mp_unacked = _mp_collections.deque(maxlen=200)
-# Block updates whose chunk isn't streamed in yet (late-join snapshot can
-# reference far chunks). Retried each frame; main thread only.
-_mp_deferred = []
-MP_DEFERRED_CAP = 1000
-
-
-def _mp_echo_key(bu):
-    # Normalize sent tuples vs JSON-decoded lists for comparison.
-    if isinstance(bu, tuple):
-        return [list(v) if isinstance(v, tuple) else v for v in bu]
-    return bu
-
-
-def _mp_requeue_outgoing(outgoing, blocks_placed_ref, blocks_broken_ref):
-    """Put unsent updates back at the front of the outgoing queues.
-
-    Used when a tick is lost (timeout) or refused-but-retryable, so
-    send-once block updates aren't silently dropped. Bounded: drops the
-    newest overflow instead of growing forever.
-    """
-    if not outgoing:
-        return
-    with _mp_lock:
-        room_p = max(0, MP_OUTGOING_CAP - len(blocks_placed_ref))
-        room_b = max(0, MP_OUTGOING_CAP - len(blocks_broken_ref))
-        head_p = [b for b in outgoing if len(b) == 2][:room_p]
-        head_b = [b for b in outgoing if len(b) == 3][:room_b]
-        blocks_placed_ref[:0] = head_p
-        blocks_broken_ref[:0] = head_b
-
-
-def _mp_apply_snapshot(playerdata_players, incoming_blocks):
-    """Update shared posses/rotations/block_updates under lock."""
-    global posses, rotations, block_updates
-    new_posses, new_rotations = [], []
-    own = _mp_own_id
-    try:
-        own = NETWORK.id
-    except (AttributeError, NameError):
-        pass
-    for p in playerdata_players or []:
-        try:
-            if p.get("id") == own:
-                continue
-            new_posses.append(Vec3(*p["position"]))
-            new_rotations.append((p["pitch"], p["yaw"] - 90, 0))
-        except (KeyError, TypeError):
-            continue
-    fresh_blocks = []
-    for bu in incoming_blocks or []:
-        # Skip our own echo (already applied locally when clicked).
-        try:
-            _mp_unacked.remove(_mp_echo_key(bu))
-            continue
-        except ValueError:
-            pass
-        fresh_blocks.append(bu)
-    with _mp_lock:
-        posses[:] = new_posses
-        rotations[:] = new_rotations
-        # Accumulate (don't overwrite): render thread drains each frame,
-        # so a fast net thread can't drop updates a slow frame hasn't seen.
-        block_updates.extend(fresh_blocks)
-
-
-def _mp_legacy_once(outgoing):
-    """Fallback for old servers without the combined tick.
-
-    Raises socket.timeout/OSError on loss: callers re-queue `outgoing`
-    (it was already drained from the shared queues).
-    """
-    st = _mp_state
-    send_data_to_server(NETWORK.tag({
-        "setData": True,
-        "coords": st["coords"].tolist(),
-        "yaw": st["yaw"],
-        "pitch": st["pitch"],
-    }), NETWORK)
-    playerdata = send_data_to_server(NETWORK.tag({"getData": True}), NETWORK)
-    if outgoing:
-        send_data_to_server(NETWORK.tag({"setBlockData": True, "block update": outgoing}), NETWORK)
-        try:
-            for bu in outgoing:
-                _mp_unacked.append(_mp_echo_key(bu))
-        except Exception:
-            pass
-    resp = send_data_to_server(NETWORK.tag({"getBlockData": True}), NETWORK)
-    _mp_apply_snapshot(playerdata.get("players", []), resp.get("block_updates", []))
-
-
-def _mp_fetch_snapshot():
-    """Late-join catch-up: pull the server's edit overlay.
-
-    Edits made before we connected are invisible to the delta flow (our
-    cursor starts at the head), so queue the overlay pages as block
-    updates first. Overlap with later live deltas is idempotent on apply.
-    Runs once on the net thread; old servers answer "Unknown message
-    type" and we skip straight to ticks.
-    """
-    offset = 0
-    fails = 0
-    while not _mp_stop:
-        try:
-            resp = NETWORK.request(
-                NETWORK.tag({"getSnapshot": True, "offset": offset}))
-        except (_mp_socket.timeout, OSError):
-            fails += 1
-            if fails > 5:
-                return
-            _mp_time.sleep(0.1)
-            continue
-        except (ValueError, KeyError, AttributeError):
-            return
-        fails = 0
-        if not isinstance(resp, dict):
-            return
-        if resp.get("error") == "Unknown message type":
-            return
-        if not resp.get("ok"):
-            return
-        page = resp.get("block_updates", [])
-        if page:
-            with _mp_lock:
-                block_updates.extend(page)
-        if resp.get("done", True):
-            return
-        try:
-            offset = int(resp.get("next_offset", offset))
-        except (TypeError, ValueError):
-            return
-
-
-def _mp_take_outgoing(blocks_placed_ref, blocks_broken_ref):
-    """Take up to MP_BLOCKS_PER_TICK updates for one tick, in order.
-
-    Leftovers stay queued for following ticks (the server truncates
-    oversized packets, so sending more would silently lose blocks).
-    Returns (state_snapshot, outgoing). Callers hold no lock; taken here.
-    """
-    with _mp_lock:
-        st = dict(_mp_state)
-        take_p = min(len(blocks_placed_ref), MP_BLOCKS_PER_TICK)
-        outgoing = blocks_placed_ref[:take_p]
-        del blocks_placed_ref[:take_p]
-        room = MP_BLOCKS_PER_TICK - take_p
-        if room and blocks_broken_ref:
-            outgoing = outgoing + blocks_broken_ref[:room]
-            del blocks_broken_ref[:room]
-    return st, outgoing
-
-
-def _multiplayer_loop(blocks_placed_ref, blocks_broken_ref):
-    global _mp_backoff_until, _mp_use_legacy
-    _mp_fetch_snapshot()
-    while not _mp_stop:
-        tick_start = _mp_time.time()
-        # Back off after rate-limit/timeout instead of hot-spinning.
-        if tick_start < _mp_backoff_until:
-            _mp_time.sleep(min(0.05, _mp_backoff_until - tick_start))
-            continue
-        # Snapshot camera + outgoing blocks under lock (no cross-thread
-        # mutation of the render-thread lists while iterating).
-        st, outgoing = _mp_take_outgoing(blocks_placed_ref, blocks_broken_ref)
-        try:
-            if _mp_use_legacy:
-                try:
-                    _mp_legacy_once(outgoing)
-                except (_mp_socket.timeout, OSError):
-                    _mp_requeue_outgoing(outgoing, blocks_placed_ref, blocks_broken_ref)
-            else:
-                resp = NETWORK.tick(
-                    NETWORK.id, st["coords"], st["yaw"], st["pitch"], outgoing,
-                )
-                if resp is None:
-                    # Packet loss (common over tunnels): the server never
-                    # saw these, so re-queue instead of dropping them.
-                    # Positions resend anyway; blocks are send-once.
-                    _mp_requeue_outgoing(outgoing, blocks_placed_ref, blocks_broken_ref)
-                elif resp.get("error") == "rate_limited":
-                    _mp_backoff_until = _mp_time.time() + 0.25
-                    # Re-queue outgoing so rate-limited blocks aren't lost.
-                    if outgoing:
-                        with _mp_lock:
-                            blocks_placed_ref.extend(
-                                [b for b in outgoing if len(b) == 2]
-                            )
-                            blocks_broken_ref.extend(
-                                [b for b in outgoing if len(b) == 3]
-                            )
-                elif resp.get("error") == "Unknown message type":
-                    _mp_use_legacy = True
-                    if outgoing:
-                        with _mp_lock:
-                            blocks_placed_ref[:0] = [b for b in outgoing if len(b) == 2]
-                            blocks_broken_ref[:0] = [b for b in outgoing if len(b) == 3]
-                elif resp.get("ok"):
-                    # Server stored our blocks: expect them back as echo and
-                    # skip them on arrival (already applied locally).
-                    if outgoing:
-                        try:
-                            for bu in outgoing:
-                                _mp_unacked.append(_mp_echo_key(bu))
-                        except Exception:
-                            pass
-                    _mp_apply_snapshot(resp.get("players", []), resp.get("block_updates", []))
-                    if resp.get("has_more"):
-                        # Server paginated: don't wait a full tick for the rest.
-                        continue
-                # Cap outgoing per tick so one frame can't build a giant datagram.
-                # (Snapshot already taken; excess stays for next tick because
-                #  update() appends faster than we drain only in bursts.)
-        except (OSError, ValueError, KeyError, AttributeError):
-            pass
-        elapsed = _mp_time.time() - tick_start
-        _mp_time.sleep(max(0.0, MP_TICK_INTERVAL - elapsed))
-
-
-def multiplayer_thread(blocks_placed, blocks_broken):
-    # Back-compat entry: old mods may call this directly. Run one tick
-    # of the legacy path instead of the old 4-RTT blocking sequence.
-    try:
-        _mp_legacy_once(list(blocks_placed) + list(blocks_broken))
-    except (_mp_socket.timeout, OSError, KeyError):
-        pass
-    try:
-        blocks_placed.clear()
-        blocks_broken.clear()
-    except AttributeError:
-        pass
-
-
-def process_multiplayer(PLAYERS, blocks_placed, blocks_broken, camera=None):
-    global _mp_thread, thr, _mp_started, is_process_finished
-    # Publish current camera snapshot for the net thread (main thread owns
-    # the camera; net thread never touches it directly).
-    # NOTE: camera must be passed explicitly. The module-global `render`
-    # is only bound AFTER Render(init, update) returns (i.e. after the
-    # game loop ends), so reading global `render` here raised NameError
-    # every frame and _mp_state stayed at spawn forever.
-    if camera is not None:
-        with _mp_lock:
-            _mp_state["coords"] = camera.position.copy()
-            _mp_state["yaw"] = camera.yaw
-            _mp_state["pitch"] = camera.pitch
-    else:
-        try:
-            with _mp_lock:
-                _mp_state["coords"] = PLAYER.pos.copy()
-                _mp_state["yaw"] = render.CAMERA.yaw
-                _mp_state["pitch"] = render.CAMERA.pitch
-        except (AttributeError, NameError):
-            pass
-    if not _mp_started:
-        _mp_started = True
-        _mp_thread = threading.Thread(
-            target=_multiplayer_loop, args=(blocks_placed, blocks_broken), daemon=True,
-        )
-        _mp_thread.start()
-        thr = _mp_thread
-    # Drain inbound under lock, apply outside the lock (render calls).
-    # Previously deferred entries (chunk not streamed in yet) retry first.
-    with _mp_lock:
-        local_posses = list(posses)
-        local_rotations = list(rotations)
-        pending = list(block_updates)
-        block_updates.clear()
-    pending = _mp_deferred + pending
-    _mp_deferred[:] = []
-    still_deferred = []
-    try:
-        # Skip zero+re-upload when nobody moved (was 2 full buffer
-        # orphan+write per frame even with zero players). Signature is
-        # cheap: lengths + first/last positions.
-        global _mp_last_posses_sig
-        try:
-            _sig = (len(local_posses),
-                    tuple(local_posses[0]) if local_posses else None,
-                    tuple(local_posses[-1]) if local_posses else None,
-                    len(local_rotations))
-        except Exception:
-            _sig = None
-        if _sig != _mp_last_posses_sig:
-            _mp_last_posses_sig = _sig
-            PLAYERS.instanedmodels["player"].instances = np.zeros(
-                (0, 4, 4),
-                dtype="f4"
-            )
-
-            PLAYERS.instanedmodels["player"].tex_insta = np.zeros(
-                (0,),
-                dtype="f4"
-            )
-
-            PLAYERS.instanedmodels["player"]._upload()
-
-            if local_posses:
-                PLAYERS.add_instances(
-                    local_posses,
-                    [11] * len(local_posses),
-                    "player",
-                    local_rotations
-                )
-
-        for bu in pending:
-            try:
-                n = len(bu)
-            except TypeError:
-                print(f"BLOCK UPDATE ERROR: UNKOWN BLOCK UPDATE:", bu)
-                continue
-            if n == 2:
-                pos = bu[1]
-            elif n == 3:
-                pos = bu
-            else:
-                print(f"BLOCK UPDATE ERROR: UNKOWN BLOCK UPDATE:", bu)
-                continue
-            try:
-                chunk_key = (pos[0] // 10 * 10, 0, pos[2] // 10 * 10)
-            except (TypeError, IndexError):
-                continue
-            # Snapshot/delta for a chunk we haven't streamed in yet: hold
-            # it for a later frame instead of generating the chunk here
-            # (sync worldgen on the render thread = hitch) or dropping it.
-            if chunk_key not in WORLD.chunks.positions_blocks:
-                if len(still_deferred) < MP_DEFERRED_CAP:
-                    still_deferred.append(bu)
-                continue
-            try:
-                if n == 2:
-                    # No cascade here: the sender already ran update()
-                    # and synced every product as its own entry.
-                    WORLD.place_block(get_block(bu[0], Vec3(*bu[1])), run_update=False)
-                else:
-                    WORLD.destroy_block(WORLD.get_block_at(Vec3(*bu)))
-            except (AttributeError, KeyError, TypeError, IndexError):
-                continue
-        _mp_deferred[:] = still_deferred
-    except (AttributeError, KeyError):
-        # PLAYERS/WORLD not ready yet (early frames).
-        _mp_deferred[:] = still_deferred
-        with _mp_lock:
-            block_updates[:0] = pending
-    is_process_finished = True
-
-
-def stop_multiplayer_thread():
-    global _mp_stop
-    _mp_stop = True
 
 frames_passed = 0
 start_second = time.time()
@@ -1071,6 +688,37 @@ def update(render:Render):
         coldbar.render()
         PLAYER.render_2D_stuff()
 
+        #print(x, y)
+
+        slot1 = "empty"
+        slot2 = "empty"
+        slot3 = "empty"
+        slot4 = "empty"
+
+        for pos, name in zip(PLAYER.invitems.all_posses, PLAYER.inventory_list):
+            x = pos.x
+            y = pos.y
+
+            if 20 <= x and 148 >= x:
+                if 290 <= y and 418 >= y:
+                    slot1 = get_block_name_from_texture(name)
+
+            elif 220 <= x and 348 >= x:
+                if 290 <= y and 418 >= y:
+                    slot2 = get_block_name_from_texture(name)
+
+            elif 420 <= x and 548 >= x:
+                if 290 <= y and 418 >= y:
+                    slot3 = get_block_name_from_texture(name)
+
+            elif 620 <= x and 748 >= x:
+                if 290 <= y and 418 >= y:
+                    slot4 = get_block_name_from_texture(name)
+
+        print(slot1, slot2, slot3, slot4)
+
+        render.set_input_mode(render.CURSOR,render.CURSOR_NORMAL)
+
         pause = True
 
     if render.get_key(render.KEY_ESCAPE) == render.PRESS and cooldown3.is_active:
@@ -1081,7 +729,7 @@ def update(render:Render):
 
             menus.activate("esc_screen")
         else:
-            if IS_BENCH_OPENED: IS_BENCH_OPENED = False
+            if IS_BENCH_OPENED: IS_BENCH_OPENED = False; PLAYER.rebuild_inv()
             render.set_input_mode(render.CURSOR,render.CURSOR_DISABLED)
 
             menus.deactivate("esc_screen")
@@ -1127,31 +775,14 @@ def update(render:Render):
     if result := raycast(WORLD.get_neighbours_extened_in_circle(PLAYER.pos, 10), render.CAMERA.eye_pos, render.CAMERA.front): #eye_pos bc ray starts from eyes
         position, normal = result
 
-        # Skip Matrix44 allocs + full buffer upload when the highlight did
-        # not move (was every frame while aiming at any block).
-        global _selected_cache_pos, _selected_cache_normal
-        try:
-            _pos_t = tuple(position.tolist())
-        except Exception:
-            _pos_t = tuple(position)
-        try:
-            _nor_t = tuple(normal.tolist())
-        except Exception:
-            _nor_t = tuple(normal)
-        if _pos_t != _selected_cache_pos or _nor_t != _selected_cache_normal:
-            _selected_cache_pos = _pos_t
-            _selected_cache_normal = _nor_t
-            a = Matrix44.from_scale([1.02, 1.02, 1.02]) @ Matrix44.from_translation(position)
+        a = Matrix44.from_scale([1.02, 1.02, 1.02]) @ Matrix44.from_translation(position)
 
-            SLECTED.instanedmodels["selected"].instances[0] = a
-            SLECTED.instanedmodels["selected"].active_instances[0] = a
+        SLECTED.instanedmodels["selected"].active_instances[0] = a
 
-            SLECTED.instanedmodels["selected"]._upload()
+        SLECTED.instanedmodels["selected"]._upload()
+
 
         if render.get_mouse_button(render.MOUSE_BUTTON_LEFT) == render.PRESS and cooldown.is_active:
-            # place_block cascades Block.update() products; sync every
-            # placed block so remotes reproduce the same result.
-            # (block_placed keeps its old meaning for mods: the clicked block.)
             block_placed = (PLAYER.get_selcted_block(), position + normal)
 
             print(WORLD.get_block_at(position))
@@ -1180,6 +811,8 @@ def update(render:Render):
 
     WORLD.update()
     WORLD.render_blocks()
+
+    if result: SLECTED.render()
 
     ITEMS.update(render.dt, PLAYER)
     ITEMS.render()
@@ -1221,8 +854,6 @@ def update(render:Render):
     hud.update_text("bps", f"BPS: {render.CAMERA.bps}", [WIDTH-200, 0])
 
     hud.render()
-
-    SLECTED.render()
 
     if time.time() - start_second >= 1:
         fps_text = f"FPS: {frames_passed}"

@@ -750,9 +750,7 @@ from allBlocks import *
 from colorama import Fore, Style
 
 
-# Dict/tuple lookup (was `match` per block; ~600 lookups per chunk on the
-# hot terrain + save-load paths). Tables built once after allBlocks import.
-_BLOCK_CTOR_BY_NAME: dict[str, type] = {
+NAME_TO_BLOCK: dict[str, type] = {
     "grass": Grass,
     "dirt": Dirt,
     "stone": Stone,
@@ -767,8 +765,8 @@ _BLOCK_CTOR_BY_NAME: dict[str, type] = {
     "unbrekable": Unbrekable,
     "bench": Bench
 }
-# Index matches allBlocks texture ids 0..11 (see save format).
-TEXTURE_CTORS: tuple[type, ...] = (
+
+TEXTURE_TO_BLOCK = (
     Birch_Leave,   # 0
     Birch_Log,     # 1
     Cobblestone,   # 2
@@ -790,29 +788,40 @@ TEXTURE_CTORS: tuple[type, ...] = (
     Unbrekable,    # 18
 )
 
+TEXTURE_NAME = (
+    "birch_leave",   # 0
+    "birch_log",     # 1
+    "cobblestone",   # 2
+    "dirt",          # 3
+    "grass",         # 4
+    "oak_leave",     # 5
+    "oak_log",       # 6
+    "oak_planks",    # 7
+    "sand",          # 8
+    "stone",         # 9
+    "water",         # 10
+    "empty",         # backpack is not a block (11)
+    "bench",         # 12
+    "empty",         # 13 (PLACEHOLDER)
+    "empty",         # 14 (PLACEHOLDER)
+    "empty",         # 15 (PLACEHOLDER)
+    "empty",         # 16 (PLACEHOLDER)
+    "empty",         # 17 (PLACEHOLDER)
+    "unbrekable",    # 18
+)
 
 def get_block(name: str | int, position: Vec3 | Sequence[Number]):
     if isinstance(name, str):
-        return _BLOCK_CTOR_BY_NAME[name](position)
+        return NAME_TO_BLOCK[name](position)
     elif isinstance(name, int):
-        return TEXTURE_CTORS[name](position)
+        return TEXTURE_TO_BLOCK[name](position)
 
     print(Fore.YELLOW + f"Unrecognized block: {name}")
     print(Style.RESET_ALL)
     return None
 
-def get_texture(idx: int, x, y, z):
-    # Tuple index (was match per block on the save-load hot path).
-    try:
-        ctor = TEXTURE_CTORS[idx]
-    except (IndexError, TypeError):
-        ctor = None
-    if ctor is not None:
-        return ctor(Vec3(x, y, z))
-
-    print(Fore.YELLOW + f"Unrecognized idx: {idx}")
-    print(Style.RESET_ALL)
-    return None
+def get_block_name_from_texture(tex:int):
+    return TEXTURE_NAME[tex]
 
 
 @cache

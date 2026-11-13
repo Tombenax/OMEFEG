@@ -149,6 +149,7 @@ class Player:
             return None
 
     def render_2D_stuff(self):
+        self.invitems.update()
         self.invitems.render()
 
     def set_pos(self, pos: Vec3):

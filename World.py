@@ -7,7 +7,7 @@ import sys
 import time
 from queue import Empty, Queue
 
-from utils import get_block, get_texture
+from utils import get_block
 
 import json
 
@@ -461,20 +461,6 @@ class World:
         rem = Vec3(0, 1, 0)
 
         if sphere:
-            """
-            for pos, rot in sphere:
-
-                positions.append(pos)
-                rotations.append(rot)
-                textures.append(GRASS)
-
-                for i in range(1):
-                    positions.append(pos - rem * (i+1))
-                    rotations.append(rot)
-                    textures.append(STONE)
-            
-            """
-
             arr = np.array(sphere)
 
             positions.extend(arr[:, 0])
